@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "WalletTxnType" ADD VALUE 'DEPOSIT_CREDIT';
