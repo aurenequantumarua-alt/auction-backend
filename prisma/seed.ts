@@ -113,6 +113,8 @@ async function main() {
     const startsAt = new Date(now - randInt(2, 24) * 60 * 60 * 1000);
     const endsAt = new Date(now + randInt(2, 96) * 60 * 60 * 1000);
     const basePrice = new Prisma.Decimal(randInt(40, 600));
+    const hasBuyNow = i % 2 === 0; // every other auction gets a buy-now price
+    const buyNowPrice = hasBuyNow ? basePrice.mul(2) : null;
     const auction = await prisma.auction.create({
       data: {
         sellerId: seller.id,
@@ -123,6 +125,7 @@ async function main() {
         condition: sample(CONDITIONS) as 'NEW' | 'LIKE_NEW' | 'GOOD' | 'FAIR',
         size: sample(SIZES),
         basePrice,
+        buyNowPrice,
         minIncrement: new Prisma.Decimal(randInt(5, 25)),
         startsAt,
         endsAt,

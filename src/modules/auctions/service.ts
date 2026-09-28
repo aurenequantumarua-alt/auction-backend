@@ -5,6 +5,8 @@ import { JOB_NAMES } from '../../config/constants.js';
 import { bankAccountRequired, conflict, forbidden, notFound } from '../../utils/http-error.js';
 import { buildPage, skipTake } from '../../utils/pagination.js';
 import { bankAccountService } from '../bankAccounts/service.js';
+import { notificationService } from '../notifications/service.js';
+import { realtime } from '../../realtime/gateway.js';
 import { settlementService } from './settlement.service.js';
 import type { CreateAuctionDto, UpdateAuctionDto, AuctionListQuery } from './dto.js';
 
@@ -41,6 +43,7 @@ export const auctionService = {
         size: dto.size,
         basePrice: new Prisma.Decimal(dto.basePrice),
         minIncrement: new Prisma.Decimal(dto.minIncrement),
+        buyNowPrice: dto.buyNowPrice ? new Prisma.Decimal(dto.buyNowPrice) : null,
         startsAt,
         endsAt,
         tags: dto.tags,
@@ -83,6 +86,9 @@ export const auctionService = {
     if (dto.size !== undefined) data.size = dto.size;
     if (dto.basePrice !== undefined) data.basePrice = new Prisma.Decimal(dto.basePrice);
     if (dto.minIncrement !== undefined) data.minIncrement = new Prisma.Decimal(dto.minIncrement);
+    if (dto.buyNowPrice !== undefined) {
+      data.buyNowPrice = dto.buyNowPrice ? new Prisma.Decimal(dto.buyNowPrice) : null;
+    }
     if (dto.tags !== undefined) data.tags = dto.tags;
     if (dto.startsAt !== undefined) data.startsAt = new Date(dto.startsAt);
     if (dto.endsAt !== undefined) data.endsAt = new Date(dto.endsAt);
@@ -189,9 +195,35 @@ export const auctionService = {
   },
 
   async list(query: AuctionListQuery) {
-    const where: Prisma.AuctionWhereInput = {
-      status: query.status ?? { in: ['UPCOMING', 'LIVE', 'ENDED'] },
-    };
+    const now = new Date();
+
+    // Reconcile any LIVE auctions whose endsAt has passed
+    await prisma.auction.updateMany({
+      where: { status: 'LIVE', endsAt: { lte: now } },
+      data: { status: 'ENDED' },
+    });
+
+    const where: Prisma.AuctionWhereInput = {};
+
+    if (query.status === 'LIVE') {
+      where.status = 'LIVE';
+      where.endsAt = { gt: now };
+      where.startsAt = { lte: now };
+    } else if (query.status === 'UPCOMING') {
+      where.OR = [
+        { status: 'UPCOMING' },
+        { status: 'LIVE', startsAt: { gt: now } },
+      ];
+    } else if (query.status === 'ENDED') {
+      where.OR = [
+        { status: { in: ['ENDED', 'EXPIRED', 'PAYMENT_PENDING', 'SOLD'] } },
+        { status: 'LIVE', endsAt: { lte: now } },
+      ];
+    } else if (query.status) {
+      where.status = query.status;
+    } else {
+      where.status = { in: ['UPCOMING', 'LIVE', 'ENDED'] };
+    }
     if (query.q) {
       where.OR = [
         { title: { contains: query.q, mode: 'insensitive' } },
@@ -209,17 +241,26 @@ export const auctionService = {
       };
     }
 
+    if (query.sort === 'ending_soon' && !query.status) {
+      where.endsAt = { gt: now };
+    }
+
+    // When status is not filtered (e.g. All statuses), always prioritize LIVE auctions before ENDED auctions
+    const statusOrder: Prisma.AuctionOrderByWithRelationInput[] = !query.status
+      ? [{ status: 'asc' }]
+      : [];
+
     const orderBy: Prisma.AuctionOrderByWithRelationInput[] = (() => {
       switch (query.sort) {
-        case 'newest':
-          return [{ createdAt: 'desc' }];
-        case 'highest_bid':
-          return [{ currentBid: { amount: 'desc' } }, { endsAt: 'asc' }];
-        case 'most_bids':
-          return [{ bidCount: 'desc' }, { endsAt: 'asc' }];
         case 'ending_soon':
+          return [...statusOrder, { endsAt: 'asc' }];
+        case 'highest_bid':
+          return [...statusOrder, { currentBid: { amount: 'desc' } }, { endsAt: 'asc' }];
+        case 'most_bids':
+          return [...statusOrder, { bidCount: 'desc' }, { endsAt: 'asc' }];
+        case 'newest':
         default:
-          return [{ endsAt: 'asc' }];
+          return [...statusOrder, { createdAt: 'desc' }];
       }
     })();
 
@@ -254,7 +295,7 @@ export const auctionService = {
       where: { id: auctionId },
       data: { viewCount: { increment: 1 } },
       select: { id: true },
-    }).catch(() => {});
+    }).catch(() => { });
 
     let isWatched = false;
     if (viewerId) {
@@ -314,6 +355,97 @@ export const auctionService = {
       },
     });
   },
+
+  /**
+   * "Buy It Now": a buyer pays the buyNowPrice instantly. The auction ends,
+   * the buyer becomes the sole winner, and a settlement is created exactly
+   * like a natural auction close. Row-locked to prevent concurrent buys.
+   */
+  async buyNow(auctionId: string, buyerId: string) {
+    // Gating: a buyer must have a VERIFIED bank account.
+    if (!(await bankAccountService.hasVerified(buyerId))) {
+      throw bankAccountRequired('Link a bank account to use Buy It Now');
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // Row-lock the auction to prevent concurrent buy-now / bid races.
+      await tx.$queryRaw`SELECT id FROM "Auction" WHERE id = ${auctionId} FOR UPDATE`;
+
+      const auction = await tx.auction.findUnique({
+        where: { id: auctionId },
+        include: { currentBid: true, settlement: true },
+      });
+      if (!auction) throw notFound('Auction not found');
+      if (auction.status !== 'LIVE') throw conflict('Auction is not live');
+      if (!auction.buyNowPrice) throw conflict('This auction does not have a Buy It Now price');
+      if (auction.sellerId === buyerId) throw forbidden('Cannot buy your own auction');
+
+      const buyNowAmount = auction.buyNowPrice;
+
+      // Create a bid at the buy-now price and mark it WON immediately.
+      const bid = await tx.bid.create({
+        data: {
+          auctionId,
+          bidderId: buyerId,
+          amount: buyNowAmount,
+          status: 'WON',
+        },
+      });
+
+      // Outbid all existing active bids.
+      await tx.bid.updateMany({
+        where: { auctionId, id: { not: bid.id }, status: 'ACTIVE' },
+        data: { status: 'OUTBID' },
+      });
+
+      const deadline = new Date(Date.now() + 48 * 60 * 60 * 1000);
+      await tx.auctionSettlement.create({
+        data: {
+          auctionId,
+          currentWinnerBidId: bid.id,
+          paymentDeadline: deadline,
+        },
+      });
+
+      await tx.auction.update({
+        where: { id: auctionId },
+        data: {
+          status: 'PAYMENT_PENDING',
+          currentBidId: bid.id,
+          bidCount: { increment: 1 },
+        },
+      });
+
+      await notificationService.notify(tx, {
+        userId: buyerId,
+        type: 'WON',
+        payload: { auctionId, title: auction.title, amount: buyNowAmount.toFixed(2), buyNow: true },
+      });
+      await notificationService.notify(tx, {
+        userId: auction.sellerId,
+        type: 'AUCTION_ENDED',
+        payload: {
+          auctionId,
+          title: auction.title,
+          winnerBidId: bid.id,
+          amount: buyNowAmount.toFixed(2),
+          buyNow: true,
+        },
+      });
+
+      realtime.emitAuctionStatus(auctionId, 'PAYMENT_PENDING');
+    });
+
+    // Remove the scheduled end job — the auction is over.
+    const endJobId = `${JOB_NAMES.endAuction}_${auctionId}`;
+    const job = await auctionLifecycleQueue.getJob(endJobId);
+    if (job) await job.remove();
+
+    return prisma.auction.findUnique({
+      where: { id: auctionId },
+      include: PUBLIC_AUCTION_INCLUDE,
+    });
+  },
 };
 
 const scheduleLifecycleJobs = async (
@@ -322,21 +454,25 @@ const scheduleLifecycleJobs = async (
   endsAt: Date,
   status: AuctionStatus,
 ): Promise<void> => {
-  const now = Date.now();
-  if (status === 'UPCOMING') {
-    const delay = Math.max(0, startsAt.getTime() - now);
+  try {
+    const now = Date.now();
+    if (status === 'UPCOMING') {
+      const delay = Math.max(0, startsAt.getTime() - now);
+      await auctionLifecycleQueue.add(
+        JOB_NAMES.goLive,
+        { auctionId },
+        { delay, jobId: `${JOB_NAMES.goLive}_${auctionId}`, removeOnComplete: true, removeOnFail: true },
+      );
+    }
+    const endDelay = Math.max(0, endsAt.getTime() - now);
     await auctionLifecycleQueue.add(
-      JOB_NAMES.goLive,
+      JOB_NAMES.endAuction,
       { auctionId },
-      { delay, jobId: `${JOB_NAMES.goLive}_${auctionId}`, removeOnComplete: true, removeOnFail: true },
+      { delay: endDelay, jobId: `${JOB_NAMES.endAuction}_${auctionId}`, removeOnComplete: true, removeOnFail: true },
     );
+  } catch (err) {
+    // Non-blocking: BullMQ is optional when local Redis is not running
   }
-  const endDelay = Math.max(0, endsAt.getTime() - now);
-  await auctionLifecycleQueue.add(
-    JOB_NAMES.endAuction,
-    { auctionId },
-    { delay: endDelay, jobId: `${JOB_NAMES.endAuction}_${auctionId}`, removeOnComplete: true, removeOnFail: true },
-  );
 };
 
 const rescheduleLifecycleJobs = async (
@@ -344,24 +480,28 @@ const rescheduleLifecycleJobs = async (
   startsAt: Date,
   endsAt: Date,
 ): Promise<void> => {
-  const goLiveId = `${JOB_NAMES.goLive}_${auctionId}`;
-  const endId = `${JOB_NAMES.endAuction}_${auctionId}`;
-  const existingGoLive = await auctionLifecycleQueue.getJob(goLiveId);
-  if (existingGoLive) await existingGoLive.remove();
-  const existingEnd = await auctionLifecycleQueue.getJob(endId);
-  if (existingEnd) await existingEnd.remove();
+  try {
+    const goLiveId = `${JOB_NAMES.goLive}_${auctionId}`;
+    const endId = `${JOB_NAMES.endAuction}_${auctionId}`;
+    const existingGoLive = await auctionLifecycleQueue.getJob(goLiveId);
+    if (existingGoLive) await existingGoLive.remove();
+    const existingEnd = await auctionLifecycleQueue.getJob(endId);
+    if (existingEnd) await existingEnd.remove();
 
-  const now = Date.now();
-  await auctionLifecycleQueue.add(
-    JOB_NAMES.goLive,
-    { auctionId },
-    { delay: Math.max(0, startsAt.getTime() - now), jobId: goLiveId, removeOnComplete: true, removeOnFail: true },
-  );
-  await auctionLifecycleQueue.add(
-    JOB_NAMES.endAuction,
-    { auctionId },
-    { delay: Math.max(0, endsAt.getTime() - now), jobId: endId, removeOnComplete: true, removeOnFail: true },
-  );
+    const now = Date.now();
+    await auctionLifecycleQueue.add(
+      JOB_NAMES.goLive,
+      { auctionId },
+      { delay: Math.max(0, startsAt.getTime() - now), jobId: goLiveId, removeOnComplete: true, removeOnFail: true },
+    );
+    await auctionLifecycleQueue.add(
+      JOB_NAMES.endAuction,
+      { auctionId },
+      { delay: Math.max(0, endsAt.getTime() - now), jobId: endId, removeOnComplete: true, removeOnFail: true },
+    );
+  } catch (err) {
+    // Non-blocking
+  }
 };
 
 export const auctionLifecycle = { schedule: scheduleLifecycleJobs, reschedule: rescheduleLifecycleJobs };

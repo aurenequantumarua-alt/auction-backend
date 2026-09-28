@@ -49,6 +49,9 @@ export const startWorkers = (): { close: () => Promise<void> } => {
     );
 
     for (const w of [lifecycleWorker, settlementWorker]) {
+      w.on('error', (err) => {
+        logger.debug({ err: err?.message }, 'Worker Redis connection error (optional service)');
+      });
       w.on('failed', (job, err) => {
         logger.error({ err, jobId: job?.id, jobName: job?.name }, 'Job failed');
       });

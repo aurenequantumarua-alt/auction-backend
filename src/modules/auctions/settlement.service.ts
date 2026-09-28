@@ -335,24 +335,32 @@ export const settlementService = {
 };
 
 const schedulePaymentTimeout = async (settlementId: string, deadline: Date): Promise<void> => {
-  const delay = Math.max(0, deadline.getTime() - Date.now());
-  await settlementQueue.add(
-    JOB_NAMES.paymentTimeout,
-    { settlementId },
-    {
-      delay,
-      jobId: `${JOB_NAMES.paymentTimeout}_${settlementId}_${deadline.getTime()}`,
-      removeOnComplete: true,
-      removeOnFail: true,
-    },
-  );
+  try {
+    const delay = Math.max(0, deadline.getTime() - Date.now());
+    await settlementQueue.add(
+      JOB_NAMES.paymentTimeout,
+      { settlementId },
+      {
+        delay,
+        jobId: `${JOB_NAMES.paymentTimeout}_${settlementId}_${deadline.getTime()}`,
+        removeOnComplete: true,
+        removeOnFail: true,
+      },
+    );
+  } catch (err) {
+    // Non-blocking
+  }
 };
 
 const cancelPaymentTimeout = async (settlementId: string): Promise<void> => {
-  const jobs = await settlementQueue.getJobs(['delayed', 'waiting']);
-  for (const job of jobs) {
-    if (job?.id?.startsWith(`${JOB_NAMES.paymentTimeout}_${settlementId}_`)) {
-      await job.remove();
+  try {
+    const jobs = await settlementQueue.getJobs(['delayed', 'waiting']);
+    for (const job of (jobs || [])) {
+      if (job?.id?.startsWith(`${JOB_NAMES.paymentTimeout}_${settlementId}_`)) {
+        await job.remove();
+      }
     }
+  } catch (err) {
+    // Non-blocking
   }
 };

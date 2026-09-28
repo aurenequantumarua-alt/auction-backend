@@ -9,9 +9,11 @@ import { logger } from './logger.js';
 export let redisAvailable = true;
 
 const createConnection = (opts?: { maxRetriesPerRequest: null }): Redis => {
+  const isTls = env.REDIS_URL.startsWith('rediss://');
   const conn = new IORedis(env.REDIS_URL, {
     ...opts,
     lazyConnect: true,
+    ...(isTls ? { tls: { rejectUnauthorized: false } } : {}),
     retryStrategy(times) {
       if (times > 3) {
         // Stop retrying after 3 attempts — Redis is down.

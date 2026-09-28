@@ -8,6 +8,7 @@ import type {
   AuctionExtendedEvent,
   AuctionStatusChangedEvent,
   BidPlacedEvent,
+  InquiryEvent,
   NotificationNewEvent,
 } from './events.js';
 import type { AccessTokenPayload } from '../middleware/auth.js';
@@ -17,7 +18,16 @@ let io: SocketServer | null = null;
 export const initRealtime = (httpServer: HttpServer): SocketServer => {
   io = new SocketServer(httpServer, {
     cors: {
-      origin: env.CORS_ORIGINS,
+      origin: (origin, cb) => {
+        if (!origin) return cb(null, true);
+        const isAllowed =
+          env.CORS_ORIGINS.includes(origin) ||
+          origin.endsWith('.vercel.app') ||
+          origin.includes('localhost') ||
+          origin.includes('127.0.0.1');
+        if (isAllowed) return cb(null, true);
+        return cb(new Error('Not allowed by CORS'), false);
+      },
       credentials: true,
     },
     path: '/socket.io',
@@ -71,5 +81,11 @@ export const realtime = {
   },
   emitNotification(userId: string, payload: NotificationNewEvent): void {
     emitToRoom(userRoom(userId), SOCKET_EVENTS.notificationNew, payload);
+  },
+  emitInquiryNew(auctionId: string, payload: InquiryEvent): void {
+    emitToRoom(auctionRoom(auctionId), SOCKET_EVENTS.inquiryNew, payload);
+  },
+  emitInquiryAnswered(auctionId: string, payload: InquiryEvent): void {
+    emitToRoom(auctionRoom(auctionId), SOCKET_EVENTS.inquiryAnswered, payload);
   },
 };

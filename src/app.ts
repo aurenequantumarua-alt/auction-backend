@@ -24,6 +24,7 @@ import { registerBankAccountRoutes } from './modules/bankAccounts/routes.js';
 import { registerWithdrawalRoutes } from './modules/withdrawals/routes.js';
 import { registerAdminRoutes } from './modules/admin/routes.js';
 import { registerReportRoutes } from './modules/reports/routes.js';
+import { registerInquiryRoutes } from './modules/inquiries/routes.js';
 
 export const buildApp = async (): Promise<FastifyInstance> => {
   const app = Fastify({
@@ -59,7 +60,16 @@ export const buildApp = async (): Promise<FastifyInstance> => {
   });
 
   await app.register(cors, {
-    origin: env.CORS_ORIGINS,
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      const isAllowed =
+        env.CORS_ORIGINS.includes(origin) ||
+        origin.endsWith('.vercel.app') ||
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1');
+      if (isAllowed) return cb(null, true);
+      return cb(new Error('Not allowed by CORS'), false);
+    },
     credentials: true,
   });
   await app.register(cookie);
@@ -85,6 +95,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
 
   // Health check
   app.get('/health', async () => ({ ok: true, version: '0.1.0' }));
+  app.get('/api/v1/health', async () => ({ ok: true, version: '0.1.0' }));
 
   // API surface — versioned at /api/v1 for future-proofing.
   await app.register(
@@ -101,6 +112,7 @@ export const buildApp = async (): Promise<FastifyInstance> => {
       await registerBankAccountRoutes(api);
       await registerWithdrawalRoutes(api);
       await registerReportRoutes(api);
+      await registerInquiryRoutes(api);
     },
     { prefix: '/api/v1' },
   );

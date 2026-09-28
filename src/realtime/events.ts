@@ -7,6 +7,8 @@ export const SOCKET_EVENTS = {
   auctionStatusChanged: 'auction:status-changed',
   auctionExtended: 'auction:extended',
   notificationNew: 'notification:new',
+  inquiryNew: 'inquiry:new',
+  inquiryAnswered: 'inquiry:answered',
 } as const;
 
 export interface BidPlacedEvent {
@@ -34,5 +36,18 @@ export interface NotificationNewEvent {
   createdAt: string;
 }
 
+export interface InquiryEvent {
+  id: string;
+  auctionId: string;
+  question: string;
+  answer?: string | null;
+  answeredAt?: string | null;
+  imageUrl?: string | null;
+  isPinned: boolean;
+  createdAt: string;
+  asker: { id: string; name: string; avatarUrl: string | null };
+}
+
 export const auctionRoom = (auctionId: string) => `auction:${auctionId}`;
 export const userRoom = (userId: string) => `user:${userId}`;
+

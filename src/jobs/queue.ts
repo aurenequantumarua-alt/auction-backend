@@ -18,14 +18,30 @@ try {
 const safeQueue = (q: Queue | null): Queue =>
   new Proxy({} as Queue, {
     get(_target, prop, receiver) {
-      if (!q) {
+      if (!q || !redisAvailable) {
         // Return a no-op function for any method call
         return (..._args: unknown[]) => {
           logger.debug(`Queue method ${String(prop)} called but Redis is unavailable`);
           return Promise.resolve(undefined);
         };
       }
-      return Reflect.get(q, prop, receiver);
+      const orig = Reflect.get(q, prop, receiver);
+      if (typeof orig === 'function') {
+        return async (...args: unknown[]) => {
+          if (!redisAvailable) {
+            logger.debug(`Queue method ${String(prop)} called but Redis is unavailable`);
+            return undefined;
+          }
+          try {
+            return await orig.apply(q, args);
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            logger.warn({ err: message }, `Queue method ${String(prop)} failed — degrading gracefully`);
+            return undefined;
+          }
+        };
+      }
+      return orig;
     },
   });
 

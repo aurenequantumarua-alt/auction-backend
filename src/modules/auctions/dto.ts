@@ -7,6 +7,16 @@ const moneyString = z
   .refine((v) => /^\d+(\.\d{1,2})?$/.test(v), 'Invalid money value')
   .refine((v) => Number(v) >= 0.01, 'Must be at least 0.01');
 
+const optionalMoneyString = z
+  .union([z.number(), z.string()])
+  .optional()
+  .nullable()
+  .transform((v) => {
+    if (v === null || v === undefined || v === '') return undefined;
+    return typeof v === 'number' ? v.toString() : v;
+  })
+  .refine((v) => v === undefined || (/^\d+(\.\d{1,2})?$/.test(v) && Number(v) >= 0.01), 'Invalid money value');
+
 const isoDate = z
   .string()
   .refine((v) => !Number.isNaN(Date.parse(v)), 'Invalid ISO date');
@@ -20,6 +30,7 @@ const AuctionFieldsSchema = z.object({
   size: z.string().min(1).max(20).trim(),
   basePrice: moneyString,
   minIncrement: moneyString,
+  buyNowPrice: optionalMoneyString,
   startsAt: isoDate,
   endsAt: isoDate,
   tags: z.array(z.string().min(1).max(24)).max(10).default([]),
@@ -43,7 +54,17 @@ export const CreateAuctionSchema = AuctionFieldsSchema
   .refine((d) => Date.parse(d.endsAt) > Date.now(), {
     path: ['endsAt'],
     message: 'endsAt must be in the future',
-  });
+  })
+  .refine(
+    (d) => {
+      if (!d.buyNowPrice) return true;
+      return Number(d.buyNowPrice) > Number(d.basePrice) * 1.2;
+    },
+    {
+      path: ['buyNowPrice'],
+      message: 'Buy-now price must be at least 20% above the starting price',
+    },
+  );
 
 export type CreateAuctionDto = z.infer<typeof CreateAuctionSchema>;
 
@@ -59,8 +80,8 @@ export const AuctionListQuerySchema = z.object({
   condition: z.enum(['NEW', 'LIKE_NEW', 'GOOD', 'FAIR']).optional(),
   status: z.enum(['UPCOMING', 'LIVE', 'ENDED', 'SOLD']).optional(),
   sort: z
-    .enum(['ending_soon', 'newest', 'highest_bid', 'most_bids'])
-    .default('ending_soon'),
+    .enum(['newest', 'ending_soon', 'highest_bid', 'most_bids'])
+    .default('newest'),
   minPrice: z.coerce.number().nonnegative().optional(),
   maxPrice: z.coerce.number().nonnegative().optional(),
 });

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { env } from '../../config/env.js';
 import { requireAuth } from '../../middleware/auth.js';
-import { LoginSchema, SignupSchema } from './dto.js';
+import { LoginSchema, SignupSchema, ForgotPasswordSchema, ResetPasswordSchema } from './dto.js';
 import { authService, type AuthResult } from './service.js';
 
 const REFRESH_COOKIE = 'aurene_refresh';
@@ -9,9 +9,9 @@ const REFRESH_COOKIE = 'aurene_refresh';
 const refreshCookieOptions = (expires: Date) => ({
   path: '/',
   httpOnly: true,
-  sameSite: 'lax' as const,
-  secure: env.COOKIE_SECURE,
-  domain: env.COOKIE_DOMAIN,
+  sameSite: (env.NODE_ENV === 'production' ? 'none' : 'lax') as 'none' | 'lax',
+  secure: env.NODE_ENV === 'production' || env.COOKIE_SECURE,
+  ...(env.COOKIE_DOMAIN && env.COOKIE_DOMAIN !== 'localhost' ? { domain: env.COOKIE_DOMAIN } : {}),
   expires,
 });
 
@@ -20,7 +20,12 @@ const setSessionCookie = (reply: import('fastify').FastifyReply, result: AuthRes
 };
 
 const clearSessionCookie = (reply: import('fastify').FastifyReply) => {
-  reply.clearCookie(REFRESH_COOKIE, { path: '/', domain: env.COOKIE_DOMAIN });
+  reply.clearCookie(REFRESH_COOKIE, {
+    path: '/',
+    sameSite: (env.NODE_ENV === 'production' ? 'none' : 'lax') as 'none' | 'lax',
+    secure: env.NODE_ENV === 'production' || env.COOKIE_SECURE,
+    ...(env.COOKIE_DOMAIN && env.COOKIE_DOMAIN !== 'localhost' ? { domain: env.COOKIE_DOMAIN } : {}),
+  });
 };
 
 const respondAuth = (reply: import('fastify').FastifyReply, result: AuthResult) => {
@@ -57,6 +62,28 @@ export const registerAuthRoutes = async (app: FastifyInstance): Promise<void> =>
       if ('requiresEmailVerification' in result) {
         return reply.send(result);
       }
+      return respondAuth(reply, result);
+    },
+  });
+
+  app.post('/auth/forgot-password', {
+    config: {
+      rateLimit: { max: env.RATE_LIMIT_AUTH_MAX, timeWindow: env.RATE_LIMIT_AUTH_WINDOW_MS },
+    },
+    handler: async (req, reply) => {
+      const dto = ForgotPasswordSchema.parse(req.body);
+      const result = await authService.forgotPassword(dto.email);
+      return reply.send(result);
+    },
+  });
+
+  app.post('/auth/reset-password', {
+    config: {
+      rateLimit: { max: env.RATE_LIMIT_AUTH_MAX, timeWindow: env.RATE_LIMIT_AUTH_WINDOW_MS },
+    },
+    handler: async (req, reply) => {
+      const dto = ResetPasswordSchema.parse(req.body);
+      const result = await authService.resetPassword(dto, req.headers['user-agent']);
       return respondAuth(reply, result);
     },
   });

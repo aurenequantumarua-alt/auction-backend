@@ -7,7 +7,7 @@ import {
   issueRefreshToken,
   signAccessToken,
 } from './tokens.js';
-import type { LoginDto, SignupDto } from './dto.js';
+import type { LoginDto, SignupDto, ResetPasswordDto } from './dto.js';
 
 const ARGON2_OPTIONS = {
   type: argon2.argon2id,
@@ -97,6 +97,43 @@ export const authService = {
     }
 
     return issueSession(user, deviceInfo);
+  },
+
+  async forgotPassword(email: string): Promise<{ ok: boolean; devCode?: string }> {
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) {
+      // Don't reveal user existence
+      return { ok: true };
+    }
+
+    const { devCode } = await otpService.requestPasswordReset(user.id, user.email);
+    return { ok: true, devCode };
+  },
+
+  async resetPassword(dto: ResetPasswordDto, deviceInfo?: string): Promise<AuthResult> {
+    const user = await prisma.user.findUnique({ where: { email: dto.email } });
+    if (!user) {
+      throw badRequest('Invalid reset request');
+    }
+
+    await otpService.verifyPasswordReset(user.id, user.email, dto.code);
+
+    const passwordHash = await argon2.hash(dto.newPassword, ARGON2_OPTIONS);
+    const updatedUser = await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash,
+        emailVerified: true,
+      },
+    });
+
+    // Invalidate old refresh tokens
+    await prisma.refreshToken.updateMany({
+      where: { userId: user.id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+
+    return issueSession(updatedUser, deviceInfo);
   },
 
   async verifyEmail(email: string, code: string, deviceInfo?: string): Promise<AuthResult> {

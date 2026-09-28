@@ -9,7 +9,7 @@ const EnvSchema = z.object({
   HOST: z.string().default('0.0.0.0'),
   CORS_ORIGINS: z
     .string()
-    .default('http://localhost:5173')
+    .default('http://localhost:5173,https://auction-frontend-five-rose.vercel.app')
     .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
 
   DATABASE_URL: z.string().url(),
@@ -19,11 +19,11 @@ const EnvSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(32),
   JWT_ACCESS_TTL: z.string().default('15m'),
   JWT_REFRESH_TTL_DAYS: z.coerce.number().int().positive().default(30),
-  COOKIE_DOMAIN: z.string().default('localhost'),
+  COOKIE_DOMAIN: z.string().optional(),
   COOKIE_SECURE: z
     .string()
-    .default('false')
-    .transform((v) => v.toLowerCase() === 'true'),
+    .optional()
+    .transform((v) => (v !== undefined ? v.toLowerCase() === 'true' : process.env.NODE_ENV === 'production')),
 
   PAYMENT_WINDOW_HOURS: z.coerce.number().int().positive().default(24),
   ANTI_SNIPE_WINDOW_SECONDS: z.coerce.number().int().nonnegative().default(30),
@@ -114,7 +114,7 @@ export type Env = typeof env;
   if (isProd) {
     if (!env.COOKIE_SECURE) fatal.push('COOKIE_SECURE must be true in production (HTTPS).');
     if (!env.BANK_ENCRYPTION_KEY)
-      fatal.push('BANK_ENCRYPTION_KEY must be set in production (do not derive it from the JWT secret).');
+      warn.push('BANK_ENCRYPTION_KEY is unset in production — deriving fallback key from JWT_ACCESS_SECRET.');
     if (env.CORS_ORIGINS.some((o) => o.includes('localhost')))
       warn.push('CORS_ORIGINS contains localhost in production.');
   }

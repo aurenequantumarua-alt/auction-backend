@@ -3,6 +3,7 @@ import { prisma } from '../../lib/prisma.js';
 import { env } from '../../config/env.js';
 import { smsService } from '../../lib/sms.js';
 import { emailService } from '../../lib/email.js';
+import { logger } from '../../lib/logger.js';
 import { badRequest } from '../../utils/http-error.js';
 
 // OTPs are short-lived; an HMAC of the code (keyed by the JWT secret) is stored,
@@ -103,5 +104,38 @@ export const otpService = {
       throw badRequest('Incorrect code');
     }
     await prisma.emailOtp.update({ where: { id: otp.id }, data: { consumedAt: new Date() } });
+  },
+
+  async requestPasswordReset(userId: string, email: string): Promise<{ sent: boolean; devCode?: string }> {
+    const since = new Date(Date.now() - REQUEST_WINDOW_MS);
+    const recent = await prisma.emailOtp.count({
+      where: { userId, email, createdAt: { gte: since } },
+    });
+    if (recent >= REQUEST_MAX) {
+      throw badRequest('Too many requests. Please try again in a few minutes.');
+    }
+
+    const code = String(crypto.randomInt(100000, 1000000));
+    await prisma.emailOtp.create({
+      data: {
+        userId,
+        email,
+        codeHash: hashCode(code),
+        expiresAt: new Date(Date.now() + env.OTP_TTL_MINUTES * 60 * 1000),
+      },
+    });
+
+    await emailService.sendPasswordResetOtp(email, code);
+
+    logger.info({ email, code: env.NODE_ENV !== 'production' ? code : undefined }, 'Password reset OTP requested');
+
+    return {
+      sent: true,
+      devCode: env.NODE_ENV !== 'production' ? code : undefined,
+    };
+  },
+
+  async verifyPasswordReset(userId: string, email: string, code: string): Promise<void> {
+    return this.verifyEmail(userId, email, code);
   },
 };

@@ -51,6 +51,12 @@ export const registerAuctionRoutes = async (app: FastifyInstance): Promise<void>
     return auctionService.endNow(req.user!.sub, id);
   });
 
+  // Buyer triggers "Buy It Now" on a live auction with a buyNowPrice set.
+  app.post('/auctions/:id/buy-now', { preHandler: requireAuth }, async (req) => {
+    const { id } = req.params as { id: string };
+    return auctionService.buyNow(id, req.user!.sub);
+  });
+
   app.delete('/auctions/:id', { preHandler: requireAuth }, async (req, reply) => {
     const { id } = req.params as { id: string };
     await auctionService.deleteDraft(req.user!.sub, id);
