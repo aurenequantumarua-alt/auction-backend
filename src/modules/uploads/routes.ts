@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../../middleware/auth.js';
 import { storage } from '../../lib/storage.js';
+import { env } from '../../config/env.js';
 import { badRequest } from '../../utils/http-error.js';
 
 const ALLOWED_MIME = new Set([
@@ -23,6 +24,16 @@ export const registerUploadRoutes = async (app: FastifyInstance): Promise<void> 
       throw badRequest('File exceeds 8 MB limit');
     }
     const stored = await storage.put(buffer, file.filename, file.mimetype);
+    // If the configured uploads URL is still localhost but the request is coming via a deployed host (e.g. Render),
+    // ensure the returned URL uses the request's public HTTPS protocol and host so browsers don't block Mixed Content.
+    const host = req.headers['x-forwarded-host'] || req.headers.host;
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined) || req.protocol;
+    if (host && env.PUBLIC_UPLOADS_BASE_URL.includes('localhost') && !host.includes('localhost')) {
+      return {
+        key: stored.key,
+        url: `${proto}://${host}/uploads/${stored.key}`,
+      };
+    }
     return stored;
   });
 };
