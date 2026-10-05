@@ -99,7 +99,7 @@ export type Env = typeof env;
   }
   // Keys present but no webhook secret -> the durable settlement path is off.
   if (env.RAZORPAY_KEY_SECRET && !env.RAZORPAY_WEBHOOK_SECRET) {
-    (isProd ? fatal : warn).push(
+    warn.push(
       'RAZORPAY_KEY_SECRET is set but RAZORPAY_WEBHOOK_SECRET is missing — webhook settlement is disabled.',
     );
   }
