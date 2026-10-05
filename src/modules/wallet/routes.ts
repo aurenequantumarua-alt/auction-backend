@@ -6,6 +6,9 @@ import { Prisma } from '@prisma/client';
 import { badRequest } from '../../utils/http-error.js';
 import { razorpayService } from '../payments/razorpay.service.js';
 import { walletService } from './service.js';
+import { prisma } from '../../lib/prisma.js';
+import { logger } from '../../lib/logger.js';
+
 export const registerWalletRoutes = async (app: FastifyInstance): Promise<void> => {
   app.get('/wallet', { preHandler: requireAuth }, async (req) => {
     return walletService.getBalance(req.user!.sub);
@@ -44,6 +47,22 @@ export const registerWalletRoutes = async (app: FastifyInstance): Promise<void> 
       notes: { type: 'wallet_deposit', userId: req.user!.sub },
     });
 
+    // Persist the deposit order so the webhook can credit the wallet
+    // even when the frontend verify call fails (e.g. auth token expired).
+    await prisma.walletDepositOrder.create({
+      data: {
+        userId: req.user!.sub,
+        razorpayOrderId: order.id,
+        amount: new Prisma.Decimal(amount),
+        status: 'PENDING',
+      },
+    });
+
+    logger.info(
+      { userId: req.user!.sub, orderId: order.id, amount },
+      'wallet deposit order created',
+    );
+
     return {
       provider: 'razorpay' as const,
       keyId: razorpayService.keyId(),
@@ -81,6 +100,12 @@ export const registerWalletRoutes = async (app: FastifyInstance): Promise<void> 
       idempotencyKey: `deposit:${body.razorpayOrderId}`,
       description: 'Funds deposited via Razorpay',
     });
+
+    // Mark the deposit order as completed
+    await prisma.walletDepositOrder.updateMany({
+      where: { razorpayOrderId: body.razorpayOrderId, status: 'PENDING' },
+      data: { status: 'COMPLETED' },
+    }).catch((e) => logger.warn({ err: (e as Error).message }, 'deposit order status update failed'));
 
     return { ok: true };
   });

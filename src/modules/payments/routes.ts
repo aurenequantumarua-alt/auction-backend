@@ -6,6 +6,7 @@ import { env } from '../../config/env.js';
 import { requireAuth } from '../../middleware/auth.js';
 import { settlementService } from '../auctions/settlement.service.js';
 import { razorpayService } from './razorpay.service.js';
+import { walletService } from '../wallet/service.js';
 import { logger } from '../../lib/logger.js';
 import { badRequest, conflict, forbidden, notFound } from '../../utils/http-error.js';
 
@@ -145,7 +146,11 @@ export const registerPaymentRoutes = async (app: FastifyInstance): Promise<void>
 /**
  * Razorpay webhook handler. Invoked from the raw-body route registered in app.ts
  * (the signature must be verified against the exact bytes). Idempotent via
- * settlementService.markPaid.
+ * settlementService.markPaid and walletService.credit idempotencyKey.
+ *
+ * Handles both:
+ * 1. Settlement payments (auction winning bids)
+ * 2. Wallet deposit orders (wallet top-ups)
  */
 export const handleRazorpayWebhook = async (
   rawBody: Buffer,
@@ -158,8 +163,8 @@ export const handleRazorpayWebhook = async (
   const event = JSON.parse(rawBody.toString('utf8')) as {
     event?: string;
     payload?: {
-      payment?: { entity?: { id?: string; order_id?: string } };
-      order?: { entity?: { id?: string } };
+      payment?: { entity?: { id?: string; order_id?: string; amount?: number; notes?: Record<string, string> } };
+      order?: { entity?: { id?: string; notes?: Record<string, string> } };
     };
   };
 
@@ -168,22 +173,55 @@ export const handleRazorpayWebhook = async (
     const paymentId = event.payload?.payment?.entity?.id;
     if (!orderId) return { ok: true };
 
+    // ── 1. Check if this is a settlement payment ──────────────────────────
     const txn = await prisma.transaction.findFirst({
       where: { externalRef: orderId },
       include: { settlement: { include: { currentWinnerBid: true } } },
     });
     const winnerBid = txn?.settlement?.currentWinnerBid;
-    if (!txn || !winnerBid) {
-      logger.warn({ orderId }, 'razorpay webhook: no matching settlement/bid');
+    if (txn && winnerBid) {
+      await settlementService
+        .markPaid(txn.settlementId, winnerBid.bidderId, new Prisma.Decimal(winnerBid.amount), {
+          provider: 'RAZORPAY',
+          externalRef: paymentId ?? orderId,
+        })
+        .catch((e) => logger.error({ err: (e as Error).message, orderId }, 'webhook markPaid failed'));
       return { ok: true };
     }
 
-    await settlementService
-      .markPaid(txn.settlementId, winnerBid.bidderId, new Prisma.Decimal(winnerBid.amount), {
-        provider: 'RAZORPAY',
-        externalRef: paymentId ?? orderId,
-      })
-      .catch((e) => logger.error({ err: (e as Error).message, orderId }, 'webhook markPaid failed'));
+    // ── 2. Check if this is a wallet deposit ──────────────────────────────
+    const depositOrder = await prisma.walletDepositOrder.findUnique({
+      where: { razorpayOrderId: orderId },
+    });
+    if (depositOrder && depositOrder.status === 'PENDING') {
+      try {
+        await walletService.credit({
+          userId: depositOrder.userId,
+          amountDecimal: new Prisma.Decimal(depositOrder.amount),
+          type: 'DEPOSIT_CREDIT',
+          reference: paymentId ?? orderId,
+          idempotencyKey: `deposit:${orderId}`,
+          description: 'Funds deposited via Razorpay',
+        });
+        await prisma.walletDepositOrder.update({
+          where: { id: depositOrder.id },
+          data: { status: 'COMPLETED' },
+        });
+        logger.info({ orderId, userId: depositOrder.userId }, 'webhook: wallet deposit credited');
+      } catch (e) {
+        logger.error({ err: (e as Error).message, orderId }, 'webhook wallet deposit credit failed');
+      }
+      return { ok: true };
+    }
+
+    // If the deposit was already completed (idempotent), still return ok.
+    if (depositOrder && depositOrder.status === 'COMPLETED') {
+      return { ok: true };
+    }
+
+    if (!txn && !depositOrder) {
+      logger.warn({ orderId }, 'razorpay webhook: no matching settlement or deposit order');
+    }
   }
 
   return { ok: true };

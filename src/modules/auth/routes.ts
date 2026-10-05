@@ -30,9 +30,14 @@ const clearSessionCookie = (reply: import('fastify').FastifyReply) => {
 
 const respondAuth = (reply: import('fastify').FastifyReply, result: AuthResult) => {
   setSessionCookie(reply, result);
+  // Return refreshToken in body as well so the frontend can store it and
+  // send it back on refresh. This avoids relying on cross-origin cookies
+  // which are blocked by modern browsers (Chrome 118+ third-party cookie
+  // phase-out). The httpOnly cookie is still set as a fallback.
   return reply.send({
     user: result.user,
     accessToken: result.accessToken,
+    refreshToken: result.refreshToken,
     expiresAt: result.refreshExpiresAt.toISOString(),
   });
 };
@@ -103,8 +108,14 @@ export const registerAuthRoutes = async (app: FastifyInstance): Promise<void> =>
     },
   });
 
+  // Accept refresh token from EITHER the httpOnly cookie (preferred) or the
+  // request body (fallback). Modern Chrome blocks third-party cookies on
+  // cross-origin deployments (Vercel → Render), so the body fallback is
+  // essential for production.
   app.post('/auth/refresh', async (req, reply) => {
-    const raw = req.cookies[REFRESH_COOKIE];
+    const raw =
+      req.cookies[REFRESH_COOKIE] ||
+      (req.body as { refreshToken?: string } | undefined)?.refreshToken;
     if (!raw) {
       reply.status(401).send({ error: { code: 'unauthorized', message: 'No refresh token present' } });
       return;
@@ -114,7 +125,10 @@ export const registerAuthRoutes = async (app: FastifyInstance): Promise<void> =>
   });
 
   app.post('/auth/logout', async (req, reply) => {
-    await authService.logout(req.cookies[REFRESH_COOKIE]);
+    const raw =
+      req.cookies[REFRESH_COOKIE] ||
+      (req.body as { refreshToken?: string } | undefined)?.refreshToken;
+    await authService.logout(raw);
     clearSessionCookie(reply);
     return reply.send({ ok: true });
   });
