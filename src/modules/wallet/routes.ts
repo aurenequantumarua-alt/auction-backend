@@ -91,6 +91,10 @@ export const registerWalletRoutes = async (app: FastifyInstance): Promise<void> 
     });
     if (!ok) throw badRequest('Payment signature verification failed');
 
+    // Attempt capture if not auto-captured by Razorpay (idempotent / safe)
+    const amountPaise = new Prisma.Decimal(body.amount).mul(100).toDecimalPlaces(0).toNumber();
+    await razorpayService.capturePayment(body.razorpayPaymentId, amountPaise);
+
     // Credit the wallet (idempotent due to razorpayOrderId)
     await walletService.credit({
       userId: req.user!.sub,

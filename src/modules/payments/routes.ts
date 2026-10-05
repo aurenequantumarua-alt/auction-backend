@@ -109,6 +109,12 @@ export const registerPaymentRoutes = async (app: FastifyInstance): Promise<void>
     });
     if (!ok) throw badRequest('Payment signature verification failed');
 
+    // Attempt capture if not auto-captured by Razorpay (idempotent / safe)
+    await razorpayService.capturePayment(
+      body.razorpayPaymentId,
+      toPaise(new Prisma.Decimal(settlement.currentWinnerBid.amount)),
+    );
+
     await settlementService.markPaid(
       settlementId,
       req.user!.sub,

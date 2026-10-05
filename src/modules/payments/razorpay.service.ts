@@ -48,6 +48,7 @@ export const razorpayService = {
         amount: params.amountPaise,
         currency: 'INR',
         receipt: params.receipt,
+        payment_capture: 1,
         notes: params.notes ?? {},
       }),
     });
@@ -57,6 +58,28 @@ export const razorpayService = {
       throw new Error(`Razorpay order creation failed (${res.status})`);
     }
     return (await res.json()) as { id: string; amount: number; currency: string; status: string };
+  },
+
+  /** Capture an authorized payment if it wasn't auto-captured. Safe to fail if already captured. */
+  async capturePayment(paymentId: string, amountPaise: number): Promise<void> {
+    if (!this.isConfigured()) return;
+    try {
+      const auth = Buffer.from(`${env.RAZORPAY_KEY_ID}:${env.RAZORPAY_KEY_SECRET}`).toString('base64');
+      const res = await fetch(`${RZP_API}/payments/${paymentId}/capture`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Basic ${auth}`,
+        },
+        body: JSON.stringify({ amount: amountPaise, currency: 'INR' }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        logger.debug({ status: res.status, text, paymentId }, 'Razorpay capture note (often already captured)');
+      }
+    } catch (err) {
+      logger.warn({ err: (err as Error).message, paymentId }, 'Razorpay capture attempt failed');
+    }
   },
 
   /** Verify the Checkout success signature: HMAC_SHA256(orderId|paymentId, keySecret). */
