@@ -35,3 +35,5 @@ services:
         sync: false
       - key: FIREBASE_API_KEY
         sync: false
+      - key: PUBLIC_UPLOADS_BASE_URL
+        value: https://auction-backend-bgkg.onrender.com/uploads
