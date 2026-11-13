@@ -2,6 +2,7 @@ import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
 import { ZodError } from 'zod';
 import { HttpError } from '../utils/http-error.js';
 import { logger } from '../lib/logger.js';
+import { captureException } from '../lib/sentry.js';
 
 export const errorHandler = (
   error: FastifyError,
@@ -41,6 +42,8 @@ export const errorHandler = (
     { err: error, requestId: request.id, url: request.url, method: request.method },
     'Unhandled error',
   );
+
+  captureException(error);
 
   reply.status(500).send({
     error: {

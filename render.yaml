@@ -55,3 +55,5 @@ services:
         sync: false
       - key: PUBLIC_UPLOADS_BASE_URL
         value: https://pub-e72acd706f6e44ceb5acea9d4bc6cbde.r2.dev
+      - key: SENTRY_DSN
+        sync: false

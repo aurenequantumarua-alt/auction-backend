@@ -86,6 +86,8 @@ const EnvSchema = z.object({
   RATE_LIMIT_AUTH_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
   RATE_LIMIT_BID_MAX: z.coerce.number().int().positive().default(30),
   RATE_LIMIT_BID_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+
+  SENTRY_DSN: z.string().url().optional(),
 });
 
 const parsed = EnvSchema.safeParse(process.env);

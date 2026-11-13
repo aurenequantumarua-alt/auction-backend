@@ -1,6 +1,8 @@
 import type { NotificationType, Prisma, PrismaClient } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { realtime } from '../../realtime/gateway.js';
+import { emailService } from '../../lib/email.js';
+import { logger } from '../../lib/logger.js';
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -9,6 +11,16 @@ interface CreateNotificationInput {
   type: NotificationType;
   payload: Prisma.InputJsonValue;
 }
+
+/** Map of notification types that trigger an email, with their subject lines. */
+const EMAIL_SUBJECTS: Partial<Record<NotificationType, string>> = {
+  WON: 'You won the auction!',
+  PAYMENT_DUE: 'Payment deadline reminder',
+  ESCROW_SECURED: 'Payment received - please ship your item',
+  FUNDS_RELEASED: 'Funds credited to your wallet',
+  DISPUTE_OPENED: 'A dispute has been opened',
+  DISPUTE_RESOLVED: 'Dispute has been resolved',
+};
 
 /**
  * The notification service writes a row + emits a real-time event.
@@ -35,6 +47,26 @@ export const notificationService = {
     } catch {
       // ignore
     }
+
+    // Fire-and-forget email for critical notification types.
+    const subject = EMAIL_SUBJECTS[input.type];
+    if (subject) {
+      const payload = input.payload as Record<string, unknown>;
+      const body = typeof payload?.message === 'string' ? payload.message : subject;
+
+      // Query user email OUTSIDE the transaction, fire-and-forget.
+      void prisma.user
+        .findUnique({ where: { id: input.userId }, select: { email: true, name: true } })
+        .then((user) => {
+          if (user?.email) {
+            return emailService.sendNotificationEmail(user.email, subject, body);
+          }
+        })
+        .catch((err) => {
+          logger.error({ err, userId: input.userId, type: input.type }, 'Failed to send notification email');
+        });
+    }
+
     return created;
   },
 
