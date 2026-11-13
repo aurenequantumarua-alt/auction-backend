@@ -23,4 +23,6 @@ export const JOB_NAMES = {
   goLive: 'auction.go-live',
   endAuction: 'auction.end',
   paymentTimeout: 'settlement.payment-timeout',
+  inspectionAutoRelease: 'settlement.inspection-auto-release',
+  shippingDeadlineRefund: 'settlement.shipping-deadline-refund',
 } as const;

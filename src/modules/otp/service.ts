@@ -20,7 +20,7 @@ export const otpService = {
    * user+phone. In non-production the code is returned (devCode) so the flow is
    * testable without a real SMS provider.
    */
-  async request(userId: string, phone: string): Promise<{ sent: boolean; devCode?: string }> {
+  async request(userId: string, phone: string): Promise<{ sent: boolean }> {
     const since = new Date(Date.now() - REQUEST_WINDOW_MS);
     const recent = await prisma.phoneOtp.count({
       where: { userId, phone, createdAt: { gte: since } },
@@ -44,7 +44,7 @@ export const otpService = {
       `Your Aurene verification code is ${code}. It expires in ${env.OTP_TTL_MINUTES} minutes.`,
     );
 
-    return { sent: true, devCode: env.NODE_ENV === 'production' ? undefined : code };
+    return { sent: true };
   },
 
   /** Verify a code for a phone. Throws (400) on missing/expired/wrong/too-many. */
@@ -106,7 +106,7 @@ export const otpService = {
     await prisma.emailOtp.update({ where: { id: otp.id }, data: { consumedAt: new Date() } });
   },
 
-  async requestPasswordReset(userId: string, email: string): Promise<{ sent: boolean; devCode?: string }> {
+  async requestPasswordReset(userId: string, email: string): Promise<{ sent: boolean }> {
     const since = new Date(Date.now() - REQUEST_WINDOW_MS);
     const recent = await prisma.emailOtp.count({
       where: { userId, email, createdAt: { gte: since } },
@@ -127,12 +127,9 @@ export const otpService = {
 
     await emailService.sendPasswordResetOtp(email, code);
 
-    logger.info({ email, code: env.NODE_ENV !== 'production' ? code : undefined }, 'Password reset OTP requested');
+    logger.info({ email }, 'Password reset OTP requested');
 
-    return {
-      sent: true,
-      devCode: env.NODE_ENV !== 'production' ? code : undefined,
-    };
+    return { sent: true };
   },
 
   async verifyPasswordReset(userId: string, email: string, code: string): Promise<void> {

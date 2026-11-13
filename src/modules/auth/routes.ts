@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
 import { env } from '../../config/env.js';
 import { requireAuth } from '../../middleware/auth.js';
 import { LoginSchema, SignupSchema, ForgotPasswordSchema, ResetPasswordSchema } from './dto.js';
@@ -98,11 +99,11 @@ export const registerAuthRoutes = async (app: FastifyInstance): Promise<void> =>
       rateLimit: { max: env.RATE_LIMIT_AUTH_MAX, timeWindow: env.RATE_LIMIT_AUTH_WINDOW_MS },
     },
     handler: async (req, reply) => {
-      const body = req.body as { email: string; code: string };
-      if (!body.email || !body.code) {
-        reply.status(400).send({ error: { code: 'bad_request', message: 'Email and code are required' } });
-        return;
-      }
+      const VerifyEmailSchema = z.object({
+        email: z.string().email().toLowerCase().trim(),
+        code: z.string().length(6).regex(/^\d+$/, 'Code must be 6 digits'),
+      });
+      const body = VerifyEmailSchema.parse(req.body);
       const result = await authService.verifyEmail(body.email, body.code, req.headers['user-agent']);
       return respondAuth(reply, result);
     },
@@ -112,16 +113,21 @@ export const registerAuthRoutes = async (app: FastifyInstance): Promise<void> =>
   // request body (fallback). Modern Chrome blocks third-party cookies on
   // cross-origin deployments (Vercel → Render), so the body fallback is
   // essential for production.
-  app.post('/auth/refresh', async (req, reply) => {
-    const raw =
-      req.cookies[REFRESH_COOKIE] ||
-      (req.body as { refreshToken?: string } | undefined)?.refreshToken;
-    if (!raw) {
-      reply.status(401).send({ error: { code: 'unauthorized', message: 'No refresh token present' } });
-      return;
-    }
-    const result = await authService.refresh(raw, req.headers['user-agent']);
-    return respondAuth(reply, result);
+  app.post('/auth/refresh', {
+    config: {
+      rateLimit: { max: env.RATE_LIMIT_AUTH_MAX, timeWindow: env.RATE_LIMIT_AUTH_WINDOW_MS },
+    },
+    handler: async (req, reply) => {
+      const raw =
+        req.cookies[REFRESH_COOKIE] ||
+        (req.body as { refreshToken?: string } | undefined)?.refreshToken;
+      if (!raw) {
+        reply.status(401).send({ error: { code: 'unauthorized', message: 'No refresh token present' } });
+        return;
+      }
+      const result = await authService.refresh(raw, req.headers['user-agent']);
+      return respondAuth(reply, result);
+    },
   });
 
   app.post('/auth/logout', async (req, reply) => {

@@ -1,4 +1,6 @@
 import argon2 from 'argon2';
+import { env } from '../../config/env.js';
+import { logger } from '../../lib/logger.js';
 import { prisma } from '../../lib/prisma.js';
 import { conflict, unauthorized, badRequest } from '../../utils/http-error.js';
 import { otpService } from '../otp/service.js';
@@ -99,15 +101,15 @@ export const authService = {
     return issueSession(user, deviceInfo);
   },
 
-  async forgotPassword(email: string): Promise<{ ok: boolean; devCode?: string }> {
+  async forgotPassword(email: string): Promise<{ ok: boolean }> {
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) {
       // Don't reveal user existence
       return { ok: true };
     }
 
-    const { devCode } = await otpService.requestPasswordReset(user.id, user.email);
-    return { ok: true, devCode };
+    await otpService.requestPasswordReset(user.id, user.email);
+    return { ok: true };
   },
 
   async resetPassword(dto: ResetPasswordDto, deviceInfo?: string): Promise<AuthResult> {

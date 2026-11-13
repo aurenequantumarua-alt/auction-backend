@@ -5,8 +5,7 @@ import { JOB_NAMES } from '../../config/constants.js';
 import { auctionLifecycleQueue } from '../../jobs/queue.js';
 import { realtime } from '../../realtime/gateway.js';
 import { notificationService } from '../notifications/service.js';
-import { badRequest, bankAccountRequired, conflict, forbidden, notFound } from '../../utils/http-error.js';
-import { bankAccountService } from '../bankAccounts/service.js';
+import { badRequest, conflict, forbidden, notFound } from '../../utils/http-error.js';
 import type { PlaceBidDto } from './dto.js';
 
 export const bidService = {
@@ -23,16 +22,15 @@ export const bidService = {
    * and reschedule the auction.end job.
    */
   async place(auctionId: string, bidderId: string, dto: PlaceBidDto) {
-    // Gating: a bidder must have a VERIFIED bank account so they can be paid /
-    // billed. Enforced server-side regardless of the UI.
-    if (!(await bankAccountService.hasVerified(bidderId))) {
-      throw bankAccountRequired('Link a bank account to place a bid');
-    }
-
     const amount = new Prisma.Decimal(dto.amount);
 
     const result = await prisma.$transaction(
       async (tx) => {
+        // Exclusively lock the auction row for the duration of this transaction.
+        // This serializes all concurrent bids on this auction and prevents race conditions
+        // where two users place bids at the exact same millisecond.
+        await tx.$queryRaw`SELECT id FROM "Auction" WHERE id = ${auctionId} FOR UPDATE`;
+
         const auction = await tx.auction.findUnique({
           where: { id: auctionId },
           include: { currentBid: true },

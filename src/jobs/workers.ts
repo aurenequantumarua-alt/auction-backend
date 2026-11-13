@@ -43,6 +43,12 @@ export const startWorkers = (): { close: () => Promise<void> } => {
       async (job) => {
         if (job.name === JOB_NAMES.paymentTimeout) {
           await settlementService.forfeitAndPromote(job.data.settlementId);
+        } else if (job.name === JOB_NAMES.inspectionAutoRelease) {
+          logger.info({ settlementId: job.data.settlementId }, 'Auto-releasing escrow (inspection window expired)');
+          await settlementService.confirmAndRelease(job.data.settlementId, 'auto');
+        } else if (job.name === JOB_NAMES.shippingDeadlineRefund) {
+          logger.info({ settlementId: job.data.settlementId }, 'Auto-refunding (shipping deadline expired)');
+          await settlementService.autoRefundShippingTimeout(job.data.settlementId);
         }
       },
       { connection: createBullConnection(), concurrency: 4 },

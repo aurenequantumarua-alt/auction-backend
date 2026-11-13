@@ -1,10 +1,11 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { env } from '../../config/env.js';
-import { badRequest } from '../../utils/http-error.js';
+import { badRequest, notFound } from '../../utils/http-error.js';
 import { walletService } from '../wallet/service.js';
 import { payoutDestinationLabel } from '../bankAccounts/service.js';
 import { payoutService } from '../payments/payout.service.js';
+import { decrypt } from '../../lib/bankCrypto.js';
 
 const serialize = (w: {
   id: string;
@@ -59,6 +60,7 @@ export const withdrawalService = {
 
     const destination = payoutDestinationLabel(acct);
     const isAsync = env.PAYOUT_PROVIDER === 'razorpayx';
+    const isManual = env.PAYOUT_PROVIDER === 'manual';
 
     // The wallet debit and the Withdrawal row are created together so a
     // withdrawal never exists without its matching ledger debit. With the mock
@@ -69,11 +71,11 @@ export const withdrawalService = {
         data: {
           userId,
           amount,
-          status: isAsync ? 'PROCESSING' : 'COMPLETED',
-          provider: isAsync ? 'razorpayx' : 'MOCK',
+          status: isAsync || isManual ? 'PROCESSING' : 'COMPLETED',
+          provider: isManual ? 'MANUAL' : (isAsync ? 'razorpayx' : 'MOCK'),
           bankLast4: destination,
-          externalRef: isAsync ? null : `mock_${userId.slice(-6)}`,
-          completedAt: isAsync ? null : new Date(),
+          externalRef: isAsync || isManual ? null : `mock_${userId.slice(-6)}`,
+          completedAt: isAsync || isManual ? null : new Date(),
         },
       });
 
@@ -89,7 +91,7 @@ export const withdrawalService = {
       );
 
       // Stamp a unique mock payout reference (tied to the row id).
-      if (!isAsync) {
+      if (!isAsync && !isManual) {
         return tx.withdrawal.update({
           where: { id: created.id },
           data: { externalRef: `mock_${created.id}` },
@@ -101,10 +103,25 @@ export const withdrawalService = {
     // Async providers (RazorpayX): hand off after commit; a webhook flips
     // PROCESSING -> COMPLETED/FAILED later.
     if (isAsync) {
+      const payoutDest =
+        acct.type === 'UPI'
+          ? {
+              type: 'UPI' as const,
+              upiId: acct.upiId ?? '',
+              name: acct.accountHolderName,
+            }
+          : {
+              type: 'BANK' as const,
+              accountNumber: acct.accountNumberEnc ? decrypt(acct.accountNumberEnc) : '',
+              ifsc: acct.ifsc ?? '',
+              name: acct.accountHolderName,
+            };
+
       const payout = await payoutService.createPayout({
         withdrawalId: withdrawal.id,
         amount: amount.toFixed(2),
         bankLast4: destination,
+        destination: payoutDest,
       });
       const finalized = await prisma.withdrawal.update({
         where: { id: withdrawal.id },
@@ -128,5 +145,114 @@ export const withdrawalService = {
       take: 100,
     });
     return rows.map(serialize);
+  },
+
+  /**
+   * Admin lists all withdrawals, including user info and decrypted payout details.
+   */
+  async listAdmin(status?: string) {
+    const where = status ? { status: status as any } : {};
+    const rows = await prisma.withdrawal.findMany({
+      where,
+      orderBy: { requestedAt: 'desc' },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+      take: 100,
+    });
+
+    const userIds = [...new Set(rows.map((r) => r.userId))];
+    const bankAccounts = await prisma.bankAccount.findMany({
+      where: { userId: { in: userIds } },
+    });
+    const acctMap = new Map(bankAccounts.map((a) => [a.userId, a]));
+
+    return rows.map((w) => {
+      const acct = acctMap.get(w.userId);
+      let destinationDetails: any = null;
+      if (acct) {
+        destinationDetails =
+          acct.type === 'UPI'
+            ? {
+                type: 'UPI',
+                upiId: acct.upiId,
+                name: acct.accountHolderName,
+              }
+            : {
+                type: 'BANK',
+                accountHolderName: acct.accountHolderName,
+                accountNumber: acct.accountNumberEnc ? decrypt(acct.accountNumberEnc) : null,
+                ifsc: acct.ifsc,
+                bankName: acct.bankName,
+              };
+      }
+      return {
+        ...serialize(w),
+        user: w.user,
+        destinationDetails,
+      };
+    });
+  },
+
+  /**
+   * Admin marks a manual withdrawal as COMPLETED after sending funds.
+   */
+  async completeManual(id: string, externalRef: string) {
+    const withdrawal = await prisma.withdrawal.findUnique({ where: { id } });
+    if (!withdrawal) throw notFound('Withdrawal not found');
+    if (withdrawal.status !== 'PROCESSING') {
+      throw badRequest(`Cannot complete withdrawal in status ${withdrawal.status}`);
+    }
+
+    const updated = await prisma.withdrawal.update({
+      where: { id },
+      data: {
+        status: 'COMPLETED',
+        externalRef,
+        completedAt: new Date(),
+      },
+    });
+    return serialize(updated);
+  },
+
+  /**
+   * Admin rejects a withdrawal. Automatically refunds the debited amount back to the user's wallet.
+   */
+  async rejectManual(id: string, reason: string) {
+    const withdrawal = await prisma.withdrawal.findUnique({ where: { id } });
+    if (!withdrawal) throw notFound('Withdrawal not found');
+    if (withdrawal.status !== 'PROCESSING') {
+      throw badRequest(`Cannot reject withdrawal in status ${withdrawal.status}`);
+    }
+
+    const finalized = await prisma.$transaction(async (tx) => {
+      await walletService.credit(
+        {
+          userId: withdrawal.userId,
+          amountDecimal: withdrawal.amount,
+          type: 'REFUND_CREDIT',
+          reference: withdrawal.id,
+          idempotencyKey: `refund_withdrawal:${withdrawal.id}`,
+          description: `Refund for rejected withdrawal: ${reason}`,
+        },
+        tx,
+      );
+
+      return tx.withdrawal.update({
+        where: { id },
+        data: {
+          status: 'FAILED',
+          failureReason: reason,
+        },
+      });
+    });
+
+    return serialize(finalized);
   },
 };

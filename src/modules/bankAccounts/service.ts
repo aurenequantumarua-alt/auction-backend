@@ -1,9 +1,7 @@
 import type { BankAccount } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
-import { env } from '../../config/env.js';
 import { encrypt, last4 } from '../../lib/bankCrypto.js';
-import { otpService } from '../otp/service.js';
-import { normalizePhone, type UpsertBankAccountDto } from './dto.js';
+import type { UpsertBankAccountDto } from './dto.js';
 
 export type MaskedPayoutMethod =
   | {
@@ -17,20 +15,16 @@ export type MaskedPayoutMethod =
   | {
       type: 'UPI';
       accountHolderName: string;
-      phone: string;
-      upiId: string | null;
+      upiId: string;
       status: string;
     };
-
-const maskPhone = (p: string): string => (p.length >= 4 ? `••••••${p.slice(-4)}` : p);
 
 const mask = (acct: BankAccount): MaskedPayoutMethod => {
   if (acct.type === 'UPI') {
     return {
       type: 'UPI',
       accountHolderName: acct.accountHolderName,
-      phone: maskPhone(acct.phone ?? ''),
-      upiId: acct.upiId,
+      upiId: acct.upiId ?? '',
       status: acct.status,
     };
   }
@@ -47,7 +41,7 @@ const mask = (acct: BankAccount): MaskedPayoutMethod => {
 /** Human-readable destination label for a payout (used when snapshotting withdrawals). */
 export const payoutDestinationLabel = (acct: BankAccount): string =>
   acct.type === 'UPI'
-    ? acct.upiId ?? maskPhone(acct.phone ?? '')
+    ? acct.upiId ?? ''
     : `••••${acct.accountNumberLast4 ?? ''}`;
 
 export interface IfscInfo {
@@ -103,36 +97,16 @@ export const bankAccountService = {
   /**
    * Create or replace the user's single payout method.
    *  - BANK: number AES-GCM encrypted at rest; only last4 returned.
-   *  - UPI:  requires a valid phone OTP (verified here); stores phone + UPI id.
+   *  - UPI:  stores UPI ID directly; no phone verification required.
    */
   async upsert(userId: string, dto: UpsertBankAccountDto): Promise<MaskedPayoutMethod> {
     if (dto.type === 'UPI') {
-      let phone = '';
-      
-      // Verify Firebase ID Token
-      try {
-        const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${env.FIREBASE_API_KEY}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ idToken: dto.idToken })
-        });
-        const data = await res.json() as any;
-        if (!res.ok || !data.users?.[0]?.phoneNumber) {
-          throw new Error('Invalid Firebase token');
-        }
-        phone = data.users[0].phoneNumber;
-      } catch (e) {
-        throw new Error('Failed to verify phone number');
-      }
-
-      phone = normalizePhone(phone);
-
       const data = {
         type: 'UPI' as const,
         accountHolderName: dto.accountHolderName,
-        phone,
-        phoneVerifiedAt: new Date(),
-        upiId: dto.upiId ?? null,
+        phone: null,
+        phoneVerifiedAt: null,
+        upiId: dto.upiId,
         // clear any prior BANK fields
         accountNumberEnc: null,
         accountNumberLast4: null,
@@ -174,3 +148,4 @@ export const bankAccountService = {
     await prisma.bankAccount.deleteMany({ where: { userId } });
   },
 };
+

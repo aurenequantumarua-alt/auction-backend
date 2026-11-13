@@ -127,8 +127,8 @@ export const registerPaymentRoutes = async (app: FastifyInstance): Promise<void>
   // Dev convenience: simulate a successful payment. Disabled once real payments
   // are configured in production.
   app.post('/payments/mock-complete/:settlementId', { preHandler: requireAuth }, async (req) => {
-    if (env.NODE_ENV === 'production' && razorpayService.isConfigured()) {
-      throw forbidden('Mock completion is disabled');
+    if (razorpayService.isConfigured()) {
+      throw forbidden('Mock completion is disabled — live Razorpay is active');
     }
     const { settlementId } = req.params as { settlementId: string };
     const settlement = await prisma.auctionSettlement.findUnique({
@@ -228,6 +228,72 @@ export const handleRazorpayWebhook = async (
     if (!txn && !depositOrder) {
       logger.warn({ orderId }, 'razorpay webhook: no matching settlement or deposit order');
     }
+  }
+
+  // ── 3. RazorpayX Payout webhooks ─────────────────────────────────────────
+  if (event.event === 'payout.processed') {
+    const payoutEntity = (event.payload as any)?.payout?.entity;
+    const payoutId = payoutEntity?.id;
+    const referenceId = payoutEntity?.reference_id as string | undefined;
+    const withdrawalId = referenceId?.startsWith('w_') ? referenceId.slice(2) : undefined;
+
+    const w = await prisma.withdrawal.findFirst({
+      where: {
+        OR: [
+          ...(payoutId ? [{ externalRef: payoutId }] : []),
+          ...(withdrawalId ? [{ id: withdrawalId }] : []),
+        ],
+      },
+    });
+
+    if (w && w.status !== 'COMPLETED') {
+      await prisma.withdrawal.update({
+        where: { id: w.id },
+        data: { status: 'COMPLETED', completedAt: new Date(), externalRef: payoutId ?? w.externalRef },
+      });
+      logger.info({ withdrawalId: w.id, payoutId }, 'webhook: withdrawal payout processed (COMPLETED)');
+    }
+    return { ok: true };
+  }
+
+  if (event.event === 'payout.reversed' || event.event === 'payout.failed') {
+    const payoutEntity = (event.payload as any)?.payout?.entity;
+    const payoutId = payoutEntity?.id;
+    const referenceId = payoutEntity?.reference_id as string | undefined;
+    const failureReason = payoutEntity?.status_details?.description ?? payoutEntity?.failure_reason ?? 'Payout failed';
+    const withdrawalId = referenceId?.startsWith('w_') ? referenceId.slice(2) : undefined;
+
+    const w = await prisma.withdrawal.findFirst({
+      where: {
+        OR: [
+          ...(payoutId ? [{ externalRef: payoutId }] : []),
+          ...(withdrawalId ? [{ id: withdrawalId }] : []),
+        ],
+      },
+    });
+
+    if (w && w.status !== 'FAILED') {
+      await prisma.$transaction(async (tx) => {
+        await tx.withdrawal.update({
+          where: { id: w.id },
+          data: { status: 'FAILED', failureReason },
+        });
+        // Refund funds back to seller wallet
+        await walletService.credit(
+          {
+            userId: w.userId,
+            amountDecimal: w.amount,
+            type: 'ADJUSTMENT',
+            reference: w.id,
+            idempotencyKey: `payout_fail_refund:${w.id}`,
+            description: `Refund: withdrawal failed (${failureReason})`,
+          },
+          tx,
+        );
+      });
+      logger.warn({ withdrawalId: w.id, payoutId, failureReason }, 'webhook: withdrawal payout failed — refunded wallet');
+    }
+    return { ok: true };
   }
 
   return { ok: true };

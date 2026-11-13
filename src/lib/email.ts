@@ -30,20 +30,12 @@ export const emailService = {
 
       if (result.error) {
         logger.error({ error: result.error, email }, 'Resend API returned an error');
-        if (env.NODE_ENV === 'development') {
-          logger.warn(`[DEV MODE] Verification OTP for ${email}: ${code}`);
-          return;
-        }
         throw new Error('Failed to send verification email');
       }
 
       logger.info({ email, id: result.data?.id }, 'Email OTP sent via Resend');
     } catch (err) {
       logger.error({ err, email }, 'Failed to send email via Resend');
-      if (env.NODE_ENV === 'development') {
-        logger.warn(`[DEV MODE] Verification OTP for ${email}: ${code}`);
-        return;
-      }
       throw new Error('Failed to send verification email');
     }
   },

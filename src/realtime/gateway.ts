@@ -20,12 +20,21 @@ export const initRealtime = (httpServer: HttpServer): SocketServer => {
     cors: {
       origin: (origin, cb) => {
         if (!origin) return cb(null, true);
-        const isAllowed =
-          env.CORS_ORIGINS.includes(origin) ||
-          origin.endsWith('.vercel.app') ||
-          origin.includes('localhost') ||
-          origin.includes('127.0.0.1');
-        if (isAllowed) return cb(null, true);
+
+        // Strict match against configured whitelist (same policy as HTTP CORS)
+        if (env.CORS_ORIGINS.includes(origin)) return cb(null, true);
+
+        if (env.NODE_ENV !== 'production') {
+          try {
+            const parsed = new URL(origin);
+            if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+              return cb(null, true);
+            }
+          } catch {
+            // Malformed origin
+          }
+        }
+
         return cb(new Error('Not allowed by CORS'), false);
       },
       credentials: true,

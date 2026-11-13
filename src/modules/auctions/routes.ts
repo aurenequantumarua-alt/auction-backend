@@ -7,7 +7,33 @@ import {
 } from './dto.js';
 import { auctionService } from './service.js';
 import { settlementService } from './settlement.service.js';
-import { forbidden } from '../../utils/http-error.js';
+import { badRequest, forbidden } from '../../utils/http-error.js';
+import { z } from 'zod';
+
+const ShipSchema = z.object({
+  trackingNumber: z.string().trim().min(1, 'Tracking number is required').max(100),
+  courierName: z.string().trim().min(1, 'Courier name is required').max(100),
+});
+
+const DisputeSchema = z.object({
+  reason: z.enum([
+    'COUNTERFEIT',
+    'NOT_AS_DESCRIBED',
+    'DAMAGED',
+    'WRONG_ITEM',
+    'NOT_DELIVERED',
+  ]),
+  description: z.string().trim().min(10, 'Description must be at least 10 characters').max(2000),
+  proofUrls: z
+    .array(
+      z
+        .string()
+        .url('Each proof must be a valid image URL')
+        .refine((u) => /^https?:\/\//i.test(u), 'Proof URL must use http or https'),
+    )
+    .min(1, 'At least one proof image is required')
+    .max(10, 'Maximum 10 proof images allowed'),
+});
 
 export const registerAuctionRoutes = async (app: FastifyInstance): Promise<void> => {
   // Browse / search
@@ -93,6 +119,42 @@ export const registerAuctionRoutes = async (app: FastifyInstance): Promise<void>
       throw forbidden('Only the current winner can decline');
     }
     await settlementService.forfeitAndPromote(id);
+    return { ok: true };
+  });
+
+  // ── Escrow lifecycle endpoints ────────────────────────────────────────
+
+  // Seller marks the item as shipped with tracking info.
+  app.post('/settlements/:id/ship', { preHandler: requireAuth }, async (req) => {
+    const { id } = req.params as { id: string };
+    const { trackingNumber, courierName } = ShipSchema.parse(req.body);
+    await settlementService.markShipped(id, req.user!.sub, { trackingNumber, courierName });
+    return { ok: true };
+  });
+
+  // Buyer or seller marks the item as delivered → starts inspection clock.
+  app.post('/settlements/:id/delivered', { preHandler: requireAuth }, async (req) => {
+    const { id } = req.params as { id: string };
+    await settlementService.markDelivered(id, req.user!.sub);
+    return { ok: true };
+  });
+
+  // Buyer confirms item authenticity → releases funds (90% seller, 10% platform).
+  app.post('/settlements/:id/confirm', { preHandler: requireAuth }, async (req) => {
+    const { id } = req.params as { id: string };
+    await settlementService.confirmAndRelease(id, 'buyer', req.user!.sub);
+    return { ok: true };
+  });
+
+  // Buyer opens a dispute with proof.
+  app.post('/settlements/:id/dispute', { preHandler: requireAuth }, async (req) => {
+    const { id } = req.params as { id: string };
+    const { reason, description, proofUrls } = DisputeSchema.parse(req.body);
+    await settlementService.openDispute(id, req.user!.sub, {
+      reason,
+      description,
+      proofUrls,
+    });
     return { ok: true };
   });
 };

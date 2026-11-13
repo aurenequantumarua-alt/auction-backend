@@ -2,9 +2,8 @@ import { Prisma, AuctionStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { auctionLifecycleQueue } from '../../jobs/queue.js';
 import { JOB_NAMES } from '../../config/constants.js';
-import { bankAccountRequired, conflict, forbidden, notFound } from '../../utils/http-error.js';
+import { conflict, forbidden, notFound } from '../../utils/http-error.js';
 import { buildPage, skipTake } from '../../utils/pagination.js';
-import { bankAccountService } from '../bankAccounts/service.js';
 import { notificationService } from '../notifications/service.js';
 import { realtime } from '../../realtime/gateway.js';
 import { settlementService } from './settlement.service.js';
@@ -19,11 +18,6 @@ const PUBLIC_AUCTION_INCLUDE = {
 
 export const auctionService = {
   async create(sellerId: string, dto: CreateAuctionDto) {
-    // Gating: a seller must have a VERIFIED bank account to receive sale payouts.
-    if (dto.publish && !(await bankAccountService.hasVerified(sellerId))) {
-      throw bankAccountRequired('Link a bank account to list an item');
-    }
-
     const startsAt = new Date(dto.startsAt);
     const endsAt = new Date(dto.endsAt);
     const status: AuctionStatus = dto.publish
@@ -121,12 +115,6 @@ export const auctionService = {
   },
 
   async publishDraft(sellerId: string, auctionId: string) {
-    // Gating: publishing makes the listing biddable, so the seller must be able
-    // to receive payouts.
-    if (!(await bankAccountService.hasVerified(sellerId))) {
-      throw bankAccountRequired('Link a bank account to publish your listing');
-    }
-
     const auction = await prisma.auction.findUnique({ where: { id: auctionId } });
     if (!auction) throw notFound('Auction not found');
     if (auction.sellerId !== sellerId) throw forbidden('Not your auction');
@@ -183,7 +171,7 @@ export const auctionService = {
 
     const endJobId = `${JOB_NAMES.endAuction}_${auctionId}`;
     const job = await auctionLifecycleQueue.getJob(endJobId);
-    if (job) await job.remove();
+    try { if (job) await job.remove(); } catch { /* job already picked up by worker */ }
 
     // Sells to the top bid (PAYMENT_PENDING) or expires if there are no bids.
     await settlementService.finalizeAuction(auctionId);
@@ -225,11 +213,18 @@ export const auctionService = {
       where.status = { in: ['UPCOMING', 'LIVE', 'ENDED'] };
     }
     if (query.q) {
-      where.OR = [
+      const textFilter: Prisma.AuctionWhereInput[] = [
         { title: { contains: query.q, mode: 'insensitive' } },
         { brand: { contains: query.q, mode: 'insensitive' } },
         { description: { contains: query.q, mode: 'insensitive' } },
       ];
+      if (where.OR) {
+        // Combine existing status filter with text search using AND
+        where.AND = [{ OR: where.OR }, { OR: textFilter }];
+        delete where.OR;
+      } else {
+        where.OR = textFilter;
+      }
     }
     if (query.category) where.category = query.category;
     if (query.brand) where.brand = { equals: query.brand, mode: 'insensitive' };
@@ -281,6 +276,9 @@ export const auctionService = {
       where: { id: auctionId },
       include: {
         ...PUBLIC_AUCTION_INCLUDE,
+        settlement: {
+          include: { currentWinnerBid: true, dispute: true },
+        },
         bids: {
           orderBy: [{ amount: 'desc' }, { placedAt: 'asc' }],
           take: 25,
@@ -289,6 +287,61 @@ export const auctionService = {
       },
     });
     if (!auction) throw notFound('Auction not found');
+
+    // Lazy reconciliation: if auction is LIVE but endsAt passed, finalize it immediately
+    if (auction.status === 'LIVE' && auction.endsAt <= new Date()) {
+      await settlementService.finalizeAuction(auctionId);
+      const refreshed = await prisma.auction.findUnique({
+        where: { id: auctionId },
+        include: {
+          ...PUBLIC_AUCTION_INCLUDE,
+          settlement: {
+            include: { currentWinnerBid: true, dispute: true },
+          },
+          bids: {
+            orderBy: [{ amount: 'desc' }, { placedAt: 'asc' }],
+            take: 25,
+            include: { bidder: { select: { id: true, name: true, avatarUrl: true } } },
+          },
+        },
+      });
+      if (refreshed) {
+        return { ...refreshed, isWatched: false };
+      }
+    }
+
+    // Lazy reconciliation: if payment deadline elapsed while awaiting payment, forfeit and promote immediately
+    if (
+      auction.status === 'PAYMENT_PENDING' &&
+      auction.settlement?.status === 'AWAITING_PAYMENT' &&
+      auction.settlement.paymentDeadline <= new Date()
+    ) {
+      await settlementService.forfeitAndPromote(auction.settlement.id);
+      const refreshed = await prisma.auction.findUnique({
+        where: { id: auctionId },
+        include: {
+          ...PUBLIC_AUCTION_INCLUDE,
+          settlement: {
+            include: { currentWinnerBid: true, dispute: true },
+          },
+          bids: {
+            orderBy: [{ amount: 'desc' }, { placedAt: 'asc' }],
+            take: 25,
+            include: { bidder: { select: { id: true, name: true, avatarUrl: true } } },
+          },
+        },
+      });
+      if (refreshed) {
+        let isWatched = false;
+        if (viewerId) {
+          const w = await prisma.watchlist.findUnique({
+            where: { userId_auctionId: { userId: viewerId, auctionId } },
+          });
+          isWatched = !!w;
+        }
+        return { ...refreshed, isWatched };
+      }
+    }
 
     // Fire-and-forget view counter — never block the response.
     void prisma.auction.update({
@@ -311,7 +364,10 @@ export const auctionService = {
     return prisma.auction.findMany({
       where: { sellerId },
       orderBy: { createdAt: 'desc' },
-      include: PUBLIC_AUCTION_INCLUDE,
+      include: {
+        ...PUBLIC_AUCTION_INCLUDE,
+        settlement: true,
+      },
     });
   },
 
@@ -349,7 +405,9 @@ export const auctionService = {
         auction: {
           include: {
             ...PUBLIC_AUCTION_INCLUDE,
-            settlement: true,
+            settlement: {
+              include: { dispute: true },
+            },
           },
         },
       },
@@ -362,11 +420,6 @@ export const auctionService = {
    * like a natural auction close. Row-locked to prevent concurrent buys.
    */
   async buyNow(auctionId: string, buyerId: string) {
-    // Gating: a buyer must have a VERIFIED bank account.
-    if (!(await bankAccountService.hasVerified(buyerId))) {
-      throw bankAccountRequired('Link a bank account to use Buy It Now');
-    }
-
     await prisma.$transaction(async (tx) => {
       // Row-lock the auction to prevent concurrent buy-now / bid races.
       await tx.$queryRaw`SELECT id FROM "Auction" WHERE id = ${auctionId} FOR UPDATE`;
@@ -439,7 +492,7 @@ export const auctionService = {
     // Remove the scheduled end job — the auction is over.
     const endJobId = `${JOB_NAMES.endAuction}_${auctionId}`;
     const job = await auctionLifecycleQueue.getJob(endJobId);
-    if (job) await job.remove();
+    try { if (job) await job.remove(); } catch { /* job already picked up by worker */ }
 
     return prisma.auction.findUnique({
       where: { id: auctionId },

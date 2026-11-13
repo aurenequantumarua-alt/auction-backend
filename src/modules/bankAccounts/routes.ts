@@ -1,8 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../../middleware/auth.js';
-import { RequestOtpSchema, UpsertBankAccountSchema, normalizePhone } from './dto.js';
+import { UpsertBankAccountSchema } from './dto.js';
 import { bankAccountService, lookupIfsc } from './service.js';
-import { otpService } from '../otp/service.js';
 
 export const registerBankAccountRoutes = async (app: FastifyInstance): Promise<void> => {
   app.get('/bank-account', { preHandler: requireAuth }, async (req) => {

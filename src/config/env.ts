@@ -42,11 +42,25 @@ const EnvSchema = z.object({
   PLATFORM_COMMISSION_BPS: z.coerce.number().int().min(0).max(10000).default(1000),
   // Minimum wallet withdrawal (rupees).
   WITHDRAWAL_MIN: z.coerce.number().nonnegative().default(100),
-  // "mock" settles withdrawals instantly; "razorpayx" uses RazorpayX Payouts.
-  PAYOUT_PROVIDER: z.enum(['mock', 'razorpayx']).default('mock'),
+  // "mock" settles withdrawals instantly; "manual" keeps pending for admin transfer; "razorpayx" uses RazorpayX API.
+  PAYOUT_PROVIDER: z.enum(['mock', 'razorpayx', 'manual']).default('mock'),
   // 64-hex-char key to encrypt stored bank account numbers. If unset, a key is
   // derived from JWT_ACCESS_SECRET so the app still works out of the box.
   BANK_ENCRYPTION_KEY: z.string().optional(),
+
+  // Escrow & delivery verification.
+  // Hours the buyer has to inspect the item after delivery before auto-release.
+  INSPECTION_WINDOW_HOURS: z.coerce.number().int().positive().default(48),
+  // Days the seller has to ship before auto-refund to buyer.
+  SHIPPING_DEADLINE_DAYS: z.coerce.number().int().positive().default(5),
+  // User ID of the platform owner; platform profit (commission) is credited to
+  // this user's wallet on escrow release. If unset, commission is recorded in
+  // the Transaction.commissionAmount column but NOT credited to any wallet.
+  PLATFORM_OWNER_USER_ID: z.string().optional(),
+  // Automated UPI ID to which the 10% platform commission is automatically paid out
+  PLATFORM_COMMISSION_UPI_ID: z.string().optional(),
+  // RazorpayX virtual account number (from RazorpayX dashboard)
+  RAZORPAYX_ACCOUNT_NUMBER: z.string().optional(),
 
   // Phone OTP verification (for linking a UPI/phone payout method).
   // "mock" doesn't send a real SMS — in non-production the code is returned to
@@ -62,6 +76,11 @@ const EnvSchema = z.object({
   STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
   UPLOADS_DIR: z.string().default('./uploads'),
   PUBLIC_UPLOADS_BASE_URL: z.string().default('http://localhost:4000/uploads'),
+  R2_ACCOUNT_ID: z.string().optional(),
+  R2_ACCESS_KEY_ID: z.string().optional(),
+  R2_SECRET_ACCESS_KEY: z.string().optional(),
+  R2_BUCKET_NAME: z.string().optional(),
+  R2_PUBLIC_URL: z.string().optional(),
 
   RATE_LIMIT_AUTH_MAX: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_AUTH_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
@@ -113,6 +132,9 @@ export type Env = typeof env;
   // Production-only invariants.
   if (isProd) {
     if (!env.COOKIE_SECURE) fatal.push('COOKIE_SECURE must be true in production (HTTPS).');
+    if (env.PAYOUT_PROVIDER === 'mock') {
+      warn.push('PAYOUT_PROVIDER=mock in production — set PAYOUT_PROVIDER=manual so withdrawals wait for admin approval.');
+    }
     if (!env.BANK_ENCRYPTION_KEY)
       warn.push('BANK_ENCRYPTION_KEY is unset in production — deriving fallback key from JWT_ACCESS_SECRET.');
     if (env.CORS_ORIGINS.some((o) => o.includes('localhost')))

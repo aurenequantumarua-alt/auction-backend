@@ -62,12 +62,22 @@ export const buildApp = async (): Promise<FastifyInstance> => {
   await app.register(cors, {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
-      const isAllowed =
-        env.CORS_ORIGINS.includes(origin) ||
-        origin.endsWith('.vercel.app') ||
-        origin.includes('localhost') ||
-        origin.includes('127.0.0.1');
-      if (isAllowed) return cb(null, true);
+
+      // Strict match against configured whitelist
+      if (env.CORS_ORIGINS.includes(origin)) return cb(null, true);
+
+      // In non-production environments, safely allow local development hosts
+      if (env.NODE_ENV !== 'production') {
+        try {
+          const parsed = new URL(origin);
+          if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+            return cb(null, true);
+          }
+        } catch {
+          // Malformed origin URL
+        }
+      }
+
       return cb(new Error('Not allowed by CORS'), false);
     },
     credentials: true,
@@ -90,6 +100,12 @@ export const buildApp = async (): Promise<FastifyInstance> => {
       root: uploadsRoot,
       prefix: '/uploads/',
       decorateReply: false,
+      setHeaders: (res) => {
+        // Prevent MIME-sniffing attacks on user-uploaded files
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        // Restrict uploaded media execution context
+        res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'");
+      },
     });
   }
 

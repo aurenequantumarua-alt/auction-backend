@@ -9,7 +9,7 @@ import type { AskQuestionDto, AnswerQuestionDto } from './dto.js';
  * by dashes/spaces) and email addresses. Used to block disintermediation.
  */
 const CONTACT_INFO_RE =
-  /(\b[\w.+-]+@[\w-]+\.[\w.]+\b)|(\+?\d[\d\s\-().]{4,}\d)/gi;
+  /(\b[\w.+-]+@[\w-]+\.[\w.]+\b)|(\+?\d[\d\s\-().]{4,}\d)/i;
 
 const sanitise = (text: string): string => {
   if (CONTACT_INFO_RE.test(text)) {

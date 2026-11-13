@@ -51,8 +51,12 @@ enum BidStatus {
 
 enum SettlementStatus {
   AWAITING_PAYMENT
-  PAID
-  EXHAUSTED
+  ESCROW_HOLD          // Paid by buyer, waiting for seller to ship
+  DELIVERED_PENDING    // Marked delivered, 48-hour inspection clock running
+  DISPUTED             // Buyer raised a dispute with proof
+  COMPLETED            // Approved/auto-released: 90% seller, 10% platform
+  REFUNDED             // Admin approved refund to buyer
+  EXHAUSTED            // Bidder chain timed out without payment
 }
 
 enum NotificationType {
@@ -67,6 +71,13 @@ enum NotificationType {
   AUCTION_SOLD
   NEW_INQUIRY
   INQUIRY_ANSWERED
+  ESCROW_SECURED      // Buyer paid → seller notified to ship
+  ITEM_SHIPPED        // Seller shipped → buyer notified
+  ITEM_DELIVERED      // Buyer/seller confirmed delivery → inspection clock starts
+  FUNDS_RELEASED      // Inspection passed → seller wallet credited
+  DISPUTE_OPENED      // Buyer raised dispute → admin + seller notified
+  DISPUTE_RESOLVED    // Admin resolved dispute → both parties notified
+  SHIPPING_DEADLINE   // Seller hasn't shipped in time → auto-refund warning
 }
 
 enum TransactionStatus {
@@ -99,6 +110,7 @@ model User {
   reports        AuctionReport[] @relation("UserReports")
   inquiriesAsked AuctionInquiry[]
   walletDepositOrders WalletDepositOrder[]
+  disputes       SettlementDispute[]
 
   @@index([email])
 }
@@ -196,15 +208,26 @@ model AuctionSettlement {
   paymentDeadline    DateTime
   attemptCount       Int              @default(1)
   status             SettlementStatus @default(AWAITING_PAYMENT)
+  // Delivery tracking
+  shippedAt          DateTime?
+  trackingNumber     String?
+  courierName        String?
+  deliveredAt        DateTime?
+  inspectionDeadline DateTime?        // deliveredAt + INSPECTION_WINDOW_HOURS
+  shippingDeadline   DateTime?        // escrowHoldAt + 5 days; auto-refund if exceeded
+  releasedAt         DateTime?
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
-  auction          Auction       @relation(fields: [auctionId], references: [id], onDelete: Cascade)
-  currentWinnerBid Bid?          @relation("SettlementWinner", fields: [currentWinnerBidId], references: [id], onDelete: SetNull)
+  auction          Auction            @relation(fields: [auctionId], references: [id], onDelete: Cascade)
+  currentWinnerBid Bid?               @relation("SettlementWinner", fields: [currentWinnerBidId], references: [id], onDelete: SetNull)
   transactions     Transaction[]
+  dispute          SettlementDispute?
 
   @@index([status])
   @@index([paymentDeadline])
+  @@index([inspectionDeadline])
+  @@index([shippingDeadline])
 }
 
 model Watchlist {
@@ -339,6 +362,7 @@ enum WalletTxnType {
   REFUND_CREDIT
   ADJUSTMENT
   DEPOSIT_CREDIT
+  PLATFORM_PROFIT_CREDIT  // 10% commission credited to platform owner wallet
 }
 
 model WalletTransaction {
@@ -469,4 +493,43 @@ model WalletDepositOrder {
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([razorpayOrderId])
+}
+
+// ── Settlement Disputes (Escrow authenticity challenges) ─────────────────
+// When a buyer receives an item and suspects it's counterfeit or not as
+// described, they open a dispute with proof. The admin reviews and either
+// refunds the buyer (100%) or releases funds to the seller (90% + 10% platform).
+
+enum DisputeReason {
+  COUNTERFEIT
+  NOT_AS_DESCRIBED
+  DAMAGED
+  WRONG_ITEM
+  NOT_DELIVERED
+}
+
+enum DisputeStatus {
+  OPEN
+  RESOLVED_REFUND    // Admin ruled in buyer's favour → 100% refund
+  RESOLVED_REJECTED  // Admin dismissed → funds released to seller
+}
+
+model SettlementDispute {
+  id           String        @id @default(cuid())
+  settlementId String        @unique
+  buyerId      String
+  reason       DisputeReason
+  description  String        @db.Text
+  proofUrls    String[]      // Uploaded photos/videos of flaws, tags, packaging
+  status       DisputeStatus @default(OPEN)
+  adminNotes   String?       @db.Text
+  resolvedAt   DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  settlement AuctionSettlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  buyer      User              @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([buyerId])
 }
