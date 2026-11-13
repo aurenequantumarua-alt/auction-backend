@@ -9,6 +9,7 @@ import { badRequest } from '../../utils/http-error.js';
 import { withdrawalService } from '../withdrawals/service.js';
 import { walletService } from '../wallet/service.js';
 import { z } from 'zod';
+import { logger } from '../../lib/logger.js';
 
 export const registerAdminRoutes = async (app: FastifyInstance): Promise<void> => {
   app.get('/auctions', { preHandler: [requireAuth, requireAdmin] }, async () => {
@@ -164,5 +165,82 @@ export const registerAdminRoutes = async (app: FastifyInstance): Promise<void> =
       adminWalletBalanceFormatted: `₹${adminWallet.balance}`,
       adminUserId: walletUserId,
     };
+  });
+
+  // ── Shill Bid Detection ──────────────────────────────────────────────────
+  // Finds auctions where two or more different users bid from the same IP.
+  // Also flags when a bidder shares an IP with the auction's seller.
+  app.get('/shill-alerts', { preHandler: [requireAuth, requireAdmin] }, async () => {
+    try {
+      // 1. Find all IPs that were used by multiple users on the SAME auction.
+      const sharedIpBids = await prisma.$queryRaw<
+        {
+          auctionId: string;
+          ipAddress: string;
+          bidderIds: string[];
+          bidCount: number;
+        }[]
+      >`
+        SELECT
+          b."auctionId",
+          b."ipAddress",
+          array_agg(DISTINCT b."bidderId") AS "bidderIds",
+          COUNT(*)::int AS "bidCount"
+        FROM "Bid" b
+        WHERE b."ipAddress" IS NOT NULL
+        GROUP BY b."auctionId", b."ipAddress"
+        HAVING COUNT(DISTINCT b."bidderId") > 1
+        ORDER BY "bidCount" DESC
+        LIMIT 100
+      `;
+
+      if (sharedIpBids.length === 0) {
+        return { alerts: [], count: 0 };
+      }
+
+      // 2. Enrich with auction + user details.
+      const auctionIds = [...new Set(sharedIpBids.map((r) => r.auctionId))];
+      const allUserIds = [...new Set(sharedIpBids.flatMap((r) => r.bidderIds))];
+
+      const [auctions, users] = await Promise.all([
+        prisma.auction.findMany({
+          where: { id: { in: auctionIds } },
+          select: { id: true, title: true, sellerId: true, status: true, seller: { select: { name: true, email: true } } },
+        }),
+        prisma.user.findMany({
+          where: { id: { in: allUserIds } },
+          select: { id: true, name: true, email: true },
+        }),
+      ]);
+
+      const auctionMap = Object.fromEntries(auctions.map((a) => [a.id, a]));
+      const userMap = Object.fromEntries(users.map((u) => [u.id, u]));
+
+      const alerts = sharedIpBids.map((row) => {
+        const auction = auctionMap[row.auctionId];
+        const bidders = row.bidderIds.map((id) => userMap[id] ?? { id, name: 'Unknown', email: '' });
+        const sellerIsBidder = auction ? row.bidderIds.includes(auction.sellerId) : false;
+
+        return {
+          auctionId: row.auctionId,
+          auctionTitle: auction?.title ?? 'Deleted',
+          auctionStatus: auction?.status ?? 'UNKNOWN',
+          seller: auction ? { name: auction.seller.name, email: auction.seller.email } : null,
+          sharedIp: row.ipAddress,
+          bidders,
+          bidCount: row.bidCount,
+          sellerIsBidder,
+          severity: sellerIsBidder ? 'CRITICAL' : 'WARNING',
+        };
+      });
+
+      // Sort: CRITICAL (seller is bidder) first
+      alerts.sort((a, b) => (a.severity === 'CRITICAL' ? -1 : 1) - (b.severity === 'CRITICAL' ? -1 : 1));
+
+      return { alerts, count: alerts.length };
+    } catch (err) {
+      logger.error({ err }, 'Failed to compute shill alerts');
+      return { alerts: [], count: 0 };
+    }
   });
 };

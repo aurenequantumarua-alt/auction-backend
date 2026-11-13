@@ -13,7 +13,7 @@ export const registerBidRoutes = async (app: FastifyInstance): Promise<void> => 
     handler: async (req, reply) => {
       const { id } = req.params as { id: string };
       const dto = PlaceBidSchema.parse(req.body);
-      const bid = await bidService.place(id, req.user!.sub, dto);
+      const bid = await bidService.place(id, req.user!.sub, dto, req.ip);
       reply.status(201);
       return {
         id: bid.id,

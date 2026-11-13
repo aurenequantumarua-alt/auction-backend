@@ -21,7 +21,7 @@ export const bidService = {
    * the auction's `endsAt`, we extend `endsAt` by `ANTI_SNIPE_EXTEND_SECONDS`
    * and reschedule the auction.end job.
    */
-  async place(auctionId: string, bidderId: string, dto: PlaceBidDto) {
+  async place(auctionId: string, bidderId: string, dto: PlaceBidDto, ipAddress?: string) {
     const amount = new Prisma.Decimal(dto.amount);
 
     const result = await prisma.$transaction(
@@ -63,6 +63,7 @@ export const bidService = {
             bidderId,
             amount,
             status: 'ACTIVE',
+            ipAddress: ipAddress ?? null,
           },
         });
 
