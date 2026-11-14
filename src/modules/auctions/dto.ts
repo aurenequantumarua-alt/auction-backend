@@ -33,13 +33,13 @@ const AuctionFieldsSchema = z.object({
   buyNowPrice: optionalMoneyString,
   startsAt: isoDate,
   endsAt: isoDate,
-  tags: z.array(z.string().min(1).max(24)).max(10).default([]),
+  tags: z.array(z.string().min(1).max(24).regex(/^[\w\s\-&,.''·×]+$/, 'Tags may only contain letters, numbers, spaces, hyphens, and basic punctuation')).max(10).default([]),
   provenance: z.string().max(4000).optional().nullable(),
-  provenanceProofUrls: z.array(z.string().url()).max(10).default([]),
+  provenanceProofUrls: z.array(z.string().url().refine((u) => u.startsWith('https://'), 'URL must use HTTPS')).max(10).default([]),
   images: z
     .array(
       z.object({
-        url: z.string().url(),
+        url: z.string().url().refine((u) => u.startsWith('https://'), 'URL must use HTTPS'),
         isCover: z.boolean().default(false),
       }),
     )

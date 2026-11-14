@@ -4,6 +4,15 @@ import { logger } from './logger.js';
 
 const resend = env.RESEND_API_KEY ? new Resend(env.RESEND_API_KEY) : null;
 
+/** Escape user-supplied strings before interpolating into HTML email templates. */
+const esc = (str: string): string =>
+  str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
 export const emailService = {
   async sendOtp(email: string, code: string): Promise<void> {
     if (!resend) {
@@ -53,8 +62,8 @@ export const emailService = {
         subject,
         html: `
           <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 32px; background: #ffffff;">
-            <h2 style="margin: 0 0 8px; color: #111827;">${subject}</h2>
-            <p style="color: #6b7280; margin: 0 0 24px;">${body}</p>
+            <h2 style="margin: 0 0 8px; color: #111827;">${esc(subject)}</h2>
+            <p style="color: #6b7280; margin: 0 0 24px;">${esc(body)}</p>
             <p style="color: #6b7280; font-size: 14px; margin: 0;">— Aurene</p>
           </div>
         `,
@@ -88,6 +97,7 @@ export const emailService = {
     const appUrl = params.appUrl || 'https://aurenefashions.in';
     const auctionUrl = `${appUrl}/auctions/${params.auctionId}`;
     const isRunnerUp = Boolean(params.isRunnerUp);
+    const safeTitle = esc(params.auctionTitle);
     const subject = isRunnerUp
       ? `🥈 You're Next in Line for "${params.auctionTitle}" · Aurene`
       : `You've been outbid on "${params.auctionTitle}" · Aurene`;
@@ -101,7 +111,7 @@ export const emailService = {
           </div>
           <div style="background: #ffffff; border: 1px solid #E0DAD0; border-radius: 6px; padding: 24px; margin-bottom: 24px;">
             <p style="font-size: 14px; color: #131C2A; line-height: 1.6; margin: 0 0 16px;">
-              Bidding for <strong>"${params.auctionTitle}"</strong> has concluded. The winning bidder now has 24 hours to complete payment into escrow.
+              Bidding for <strong>"${safeTitle}"</strong> has concluded. The winning bidder now has 24 hours to complete payment into escrow.
             </p>
             <div style="background: #F4EFE6; border-left: 3px solid #B89C6F; padding: 12px 16px; margin-bottom: 16px;">
               <p style="font-size: 13px; color: #5C4A30; margin: 0; line-height: 1.5;">
@@ -130,7 +140,7 @@ export const emailService = {
           </div>
           <div style="background: #ffffff; border: 1px solid #E0DAD0; border-radius: 6px; padding: 24px; margin-bottom: 24px;">
             <p style="font-size: 14px; color: #131C2A; line-height: 1.6; margin: 0 0 16px;">
-              Another bidder has placed a higher bid on <strong>"${params.auctionTitle}"</strong>.
+              Another bidder has placed a higher bid on <strong>"${safeTitle}"</strong>.
             </p>
             <table style="width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 13px;">
               <tr>
