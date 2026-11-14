@@ -1,5 +1,6 @@
 import type { NotificationType, Prisma, PrismaClient } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
+import { env } from '../../config/env.js';
 import { realtime } from '../../realtime/gateway.js';
 import { emailService } from '../../lib/email.js';
 import { logger } from '../../lib/logger.js';
@@ -48,23 +49,46 @@ export const notificationService = {
       // ignore
     }
 
-    // Fire-and-forget email for critical notification types.
-    const subject = EMAIL_SUBJECTS[input.type];
-    if (subject) {
+    // Fire-and-forget email for notifications.
+    if (input.type === 'OUTBID') {
       const payload = input.payload as Record<string, unknown>;
-      const body = typeof payload?.message === 'string' ? payload.message : subject;
-
-      // Query user email OUTSIDE the transaction, fire-and-forget.
       void prisma.user
         .findUnique({ where: { id: input.userId }, select: { email: true, name: true } })
         .then((user) => {
           if (user?.email) {
-            return emailService.sendNotificationEmail(user.email, subject, body);
+            return emailService.sendOutbidEmail({
+              to: user.email,
+              recipientName: user.name,
+              auctionTitle: String(payload.title || 'Auction Piece'),
+              auctionId: String(payload.auctionId || ''),
+              previousAmount: String(payload.previousAmount || payload.amount || '0'),
+              newAmount: String(payload.newAmount || payload.amount || '0'),
+              isRunnerUp: Boolean(payload.isRunnerUp),
+              appUrl: env.CORS_ORIGINS?.[0] || 'https://aurenefashions.in',
+            });
           }
         })
         .catch((err) => {
-          logger.error({ err, userId: input.userId, type: input.type }, 'Failed to send notification email');
+          logger.error({ err, userId: input.userId, type: input.type }, 'Failed to send outbid notification email');
         });
+    } else {
+      const subject = EMAIL_SUBJECTS[input.type];
+      if (subject) {
+        const payload = input.payload as Record<string, unknown>;
+        const body = typeof payload?.message === 'string' ? payload.message : subject;
+
+        // Query user email OUTSIDE the transaction, fire-and-forget.
+        void prisma.user
+          .findUnique({ where: { id: input.userId }, select: { email: true, name: true } })
+          .then((user) => {
+            if (user?.email) {
+              return emailService.sendNotificationEmail(user.email, subject, body);
+            }
+          })
+          .catch((err) => {
+            logger.error({ err, userId: input.userId, type: input.type }, 'Failed to send notification email');
+          });
+      }
     }
 
     return created;

@@ -2,7 +2,7 @@ import { Prisma, AuctionStatus } from '@prisma/client';
 import { prisma } from '../../lib/prisma.js';
 import { auctionLifecycleQueue } from '../../jobs/queue.js';
 import { JOB_NAMES } from '../../config/constants.js';
-import { conflict, forbidden, notFound } from '../../utils/http-error.js';
+import { conflict, forbidden, notFound, badRequest } from '../../utils/http-error.js';
 import { buildPage, skipTake } from '../../utils/pagination.js';
 import { notificationService } from '../notifications/service.js';
 import { realtime } from '../../realtime/gateway.js';
@@ -19,12 +19,10 @@ const PUBLIC_AUCTION_INCLUDE = {
 export const auctionService = {
   async create(sellerId: string, dto: CreateAuctionDto) {
     const startsAt = new Date(dto.startsAt);
-    const endsAt = new Date(dto.endsAt);
-    const status: AuctionStatus = dto.publish
-      ? startsAt <= new Date()
-        ? 'LIVE'
-        : 'UPCOMING'
-      : 'DRAFT';
+    // Enforce strictly 24 hours duration for the auction bidding window
+    const endsAt = new Date(startsAt.getTime() + 24 * 60 * 60 * 1000);
+    // Since startsAt is >= 24h in the future, published auctions always start as UPCOMING
+    const status: AuctionStatus = dto.publish ? 'UPCOMING' : 'DRAFT';
 
     const auction = await prisma.auction.create({
       data: {
@@ -41,6 +39,8 @@ export const auctionService = {
         startsAt,
         endsAt,
         tags: dto.tags,
+        provenance: dto.category === 'Antiques' && dto.provenance ? dto.provenance : null,
+        provenanceProofUrls: dto.category === 'Antiques' && dto.provenanceProofUrls ? dto.provenanceProofUrls : [],
         status,
         images: {
           create: dto.images.map((img, idx) => ({
@@ -84,8 +84,15 @@ export const auctionService = {
       data.buyNowPrice = dto.buyNowPrice ? new Prisma.Decimal(dto.buyNowPrice) : null;
     }
     if (dto.tags !== undefined) data.tags = dto.tags;
-    if (dto.startsAt !== undefined) data.startsAt = new Date(dto.startsAt);
-    if (dto.endsAt !== undefined) data.endsAt = new Date(dto.endsAt);
+    if (dto.provenance !== undefined) data.provenance = dto.provenance;
+    if (dto.provenanceProofUrls !== undefined) data.provenanceProofUrls = dto.provenanceProofUrls;
+    if (dto.startsAt !== undefined) {
+      const startsAt = new Date(dto.startsAt);
+      data.startsAt = startsAt;
+      data.endsAt = new Date(startsAt.getTime() + 24 * 60 * 60 * 1000);
+    } else if (dto.endsAt !== undefined) {
+      data.endsAt = new Date(dto.endsAt);
+    }
 
     const updated = await prisma.auction.update({
       where: { id: auctionId },
@@ -121,7 +128,12 @@ export const auctionService = {
     if (auction.status !== 'DRAFT') throw conflict('Auction is not a draft');
 
     const now = new Date();
-    const status: AuctionStatus = auction.startsAt <= now ? 'LIVE' : 'UPCOMING';
+    const minStart = now.getTime() + 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
+    if (auction.startsAt.getTime() < minStart) {
+      throw badRequest('Auctions must be scheduled to start at least 24 hours in advance. Please edit the listing to update the start time first.');
+    }
+
+    const status: AuctionStatus = 'UPCOMING';
     const updated = await prisma.auction.update({
       where: { id: auctionId },
       data: { status },
@@ -387,14 +399,60 @@ export const auctionService = {
   },
 
   async myBids(userId: string) {
-    return prisma.bid.findMany({
+    const bids = await prisma.bid.findMany({
       where: { bidderId: userId },
       orderBy: { placedAt: 'desc' },
       include: {
-        auction: { include: PUBLIC_AUCTION_INCLUDE },
+        auction: {
+          include: {
+            ...PUBLIC_AUCTION_INCLUDE,
+            settlement: {
+              select: {
+                id: true,
+                status: true,
+                paymentDeadline: true,
+                currentWinnerBidId: true,
+              },
+            },
+          },
+        },
       },
       take: 100,
     });
+
+    const pendingAuctionIds = [
+      ...new Set(
+        bids
+          .filter((b) => b.auction.status === 'PAYMENT_PENDING' && b.status === 'OUTBID')
+          .map((b) => b.auctionId),
+      ),
+    ];
+
+    if (pendingAuctionIds.length === 0) {
+      return bids.map((b) => ({ ...b, isRunnerUp: false }));
+    }
+
+    const runnerUpBids = await prisma.bid.findMany({
+      where: {
+        auctionId: { in: pendingAuctionIds },
+        status: 'OUTBID',
+      },
+      orderBy: [{ amount: 'desc' }, { placedAt: 'asc' }],
+    });
+
+    const runnerUpBidIds = new Set<string>();
+    const seenAuctions = new Set<string>();
+    for (const rb of runnerUpBids) {
+      if (!seenAuctions.has(rb.auctionId)) {
+        seenAuctions.add(rb.auctionId);
+        runnerUpBidIds.add(rb.id);
+      }
+    }
+
+    return bids.map((b) => ({
+      ...b,
+      isRunnerUp: runnerUpBidIds.has(b.id),
+    }));
   },
 
   async myWins(userId: string) {

@@ -207,6 +207,31 @@ export const settlementService = {
         },
       });
 
+      // Notify the runner-up (2nd place bidder) that they are on deck if the winner forfeits
+      const runnerUpBid = await tx.bid.findFirst({
+        where: {
+          auctionId,
+          bidderId: { not: topBid.bidderId },
+          status: { in: ['ACTIVE', 'OUTBID'] },
+        },
+        orderBy: [{ amount: 'desc' }, { placedAt: 'asc' }],
+      });
+
+      if (runnerUpBid) {
+        await notificationService.notify(tx, {
+          userId: runnerUpBid.bidderId,
+          type: 'OUTBID',
+          payload: {
+            auctionId,
+            title: auction.title,
+            isRunnerUp: true,
+            amount: runnerUpBid.amount.toFixed(2),
+            deadline,
+            message: `You placed 2nd for "${auction.title}". The winning bidder has 24 hours to pay; if they forfeit, this item will be offered to you.`,
+          },
+        });
+      }
+
       realtime.emitAuctionStatus(auctionId, 'PAYMENT_PENDING');
       await schedulePaymentTimeout(settlement.id, deadline);
     });
@@ -310,6 +335,31 @@ export const settlementService = {
           attempt: updated.attemptCount,
         },
       });
+
+      // Notify the new runner-up in the chain
+      const nextRunnerUp = await tx.bid.findFirst({
+        where: {
+          auctionId: settlement.auctionId,
+          bidderId: { notIn: [forfeitedBidderId, next.bidderId] },
+          status: 'OUTBID',
+        },
+        orderBy: [{ amount: 'desc' }, { placedAt: 'asc' }],
+      });
+
+      if (nextRunnerUp) {
+        await notificationService.notify(tx, {
+          userId: nextRunnerUp.bidderId,
+          type: 'OUTBID',
+          payload: {
+            auctionId: settlement.auctionId,
+            title: settlement.auction.title,
+            isRunnerUp: true,
+            amount: nextRunnerUp.amount.toFixed(2),
+            deadline,
+            message: `You are now next in line for "${settlement.auction.title}". If the current winner does not complete payment within 24 hours, this item will be offered to you.`,
+          },
+        });
+      }
 
       realtime.emitAuctionStatus(settlement.auctionId, 'PAYMENT_PENDING');
       await schedulePaymentTimeout(settlementId, deadline);

@@ -1,14 +1,15 @@
 export const AUCTION_CATEGORIES = [
-  'Outerwear',
-  'Tops',
-  'Bottoms',
-  'Footwear',
-  'Accessories',
-  'Bags',
-  'Suits',
-  'Knitwear',
-  'Denim',
-  'Vintage',
+  'Antiques',
+  'Collectibles & Art',
+  'Clothing & Fashion',
+  'Footwear & Sneakers',
+  'Watches & Jewellery',
+  'Bags & Accessories',
+  'Electronics & Gadgets',
+  'Home & Furniture',
+  'Books & Media',
+  'Automobilia & Vehicle Parts',
+  'Other',
 ] as const;
 
 export const PAGE_SIZE_DEFAULT = 24;

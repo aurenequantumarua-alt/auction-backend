@@ -7,7 +7,19 @@ const sample = (arr: readonly string[]) => arr[Math.floor(Math.random() * arr.le
 const randInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
 
 const BRANDS = ['Acne Studios', 'Maison Margiela', 'Rick Owens', 'Comme des Garçons', 'Dries Van Noten', 'Stone Island', 'Visvim', 'Issey Miyake', 'Yohji Yamamoto', 'Lemaire'] as const;
-const CATEGORIES = ['Outerwear', 'Tops', 'Bottoms', 'Footwear', 'Knitwear', 'Denim'] as const;
+const CATEGORIES = [
+  'Antiques',
+  'Collectibles & Art',
+  'Clothing & Fashion',
+  'Footwear & Sneakers',
+  'Watches & Jewellery',
+  'Bags & Accessories',
+  'Electronics & Gadgets',
+  'Home & Furniture',
+  'Books & Media',
+  'Automobilia & Vehicle Parts',
+  'Other',
+] as const;
 const CONDITIONS = ['NEW', 'LIKE_NEW', 'GOOD', 'FAIR'] as const;
 const SIZES = ['S', 'M', 'L', 'XL', '32', '34'] as const;
 

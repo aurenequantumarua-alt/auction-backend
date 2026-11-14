@@ -34,6 +34,8 @@ const AuctionFieldsSchema = z.object({
   startsAt: isoDate,
   endsAt: isoDate,
   tags: z.array(z.string().min(1).max(24)).max(10).default([]),
+  provenance: z.string().max(4000).optional().nullable(),
+  provenanceProofUrls: z.array(z.string().url()).max(10).default([]),
   images: z
     .array(
       z.object({
@@ -57,6 +59,42 @@ export const CreateAuctionSchema = AuctionFieldsSchema
   })
   .refine(
     (d) => {
+      // Must be scheduled at least 24 hours in advance (with 5-minute clock buffer)
+      const start = Date.parse(d.startsAt);
+      const minStart = Date.now() + 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
+      return start >= minStart;
+    },
+    {
+      path: ['startsAt'],
+      message: 'Auctions cannot start immediately. Must be scheduled at least 24 hours (1 day) in advance.',
+    },
+  )
+  .refine(
+    (d) => {
+      // Cannot be scheduled more than 30 days in advance
+      const start = Date.parse(d.startsAt);
+      const maxStart = Date.now() + 30 * 24 * 60 * 60 * 1000 + 5 * 60 * 1000;
+      return start <= maxStart;
+    },
+    {
+      path: ['startsAt'],
+      message: 'Auction cannot be scheduled more than 30 days (1 month) in advance.',
+    },
+  )
+  .refine(
+    (d) => {
+      // Auction bidding window is strictly 24 hours (+/- 5 min form tolerance)
+      const durationMs = Date.parse(d.endsAt) - Date.parse(d.startsAt);
+      const twentyFourHoursMs = 24 * 60 * 60 * 1000;
+      return Math.abs(durationMs - twentyFourHoursMs) <= 5 * 60 * 1000;
+    },
+    {
+      path: ['endsAt'],
+      message: 'Auction window must be strictly 24 hours.',
+    },
+  )
+  .refine(
+    (d) => {
       if (!d.buyNowPrice) return true;
       return Number(d.buyNowPrice) > Number(d.basePrice) * 1.2;
     },
@@ -68,7 +106,36 @@ export const CreateAuctionSchema = AuctionFieldsSchema
 
 export type CreateAuctionDto = z.infer<typeof CreateAuctionSchema>;
 
-export const UpdateAuctionSchema = AuctionFieldsSchema.partial().omit({ publish: true });
+export const UpdateAuctionSchema = AuctionFieldsSchema.partial()
+  .omit({ publish: true })
+  .refine(
+    (d) => {
+      if (d.startsAt) {
+        const start = Date.parse(d.startsAt);
+        const minStart = Date.now() + 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
+        const maxStart = Date.now() + 30 * 24 * 60 * 60 * 1000 + 5 * 60 * 1000;
+        return start >= minStart && start <= maxStart;
+      }
+      return true;
+    },
+    {
+      path: ['startsAt'],
+      message: 'Auction must be scheduled between 24 hours and 30 days in advance.',
+    },
+  )
+  .refine(
+    (d) => {
+      if (d.startsAt && d.endsAt) {
+        const duration = Date.parse(d.endsAt) - Date.parse(d.startsAt);
+        return Math.abs(duration - 24 * 60 * 60 * 1000) <= 5 * 60 * 1000;
+      }
+      return true;
+    },
+    {
+      path: ['endsAt'],
+      message: 'Auction window must be strictly 24 hours.',
+    },
+  );
 export type UpdateAuctionDto = z.infer<typeof UpdateAuctionSchema>;
 
 export const AuctionListQuerySchema = z.object({
