@@ -6,55 +6,70 @@ const prisma = new PrismaClient();
 const sample = (arr: readonly string[]) => arr[Math.floor(Math.random() * arr.length)]!;
 const randInt = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
 
-const BRANDS = ['Acne Studios', 'Maison Margiela', 'Rick Owens', 'Comme des Garçons', 'Dries Van Noten', 'Stone Island', 'Visvim', 'Issey Miyake', 'Yohji Yamamoto', 'Lemaire'] as const;
+const BRANDS = [
+  'Breguet & Fils',
+  'Cartier Horlogerie',
+  'Meiji Imperial Workshop',
+  'Edo Goldsmith Guild',
+  'Ming Dynasty Atelier',
+  'Patek & Cie',
+  'Tiffany & Co. Makers',
+  'Baccarat Cristallerie',
+  'Murano Maestri',
+  'Georgian Silversmiths',
+] as const;
 const CATEGORIES = [
   'Antiques',
   'Collectibles & Art',
-  'Clothing & Fashion',
-  'Footwear & Sneakers',
-  'Watches & Jewellery',
-  'Bags & Accessories',
-  'Electronics & Gadgets',
-  'Home & Furniture',
-  'Books & Media',
-  'Automobilia & Vehicle Parts',
+  'Watches & Horology',
+  'Jewellery & Relics',
+  'Ceramics & Porcelain',
+  'Sculpture & Bronze',
+  'Rare Books & Manuscripts',
   'Other',
 ] as const;
 const CONDITIONS = ['NEW', 'LIKE_NEW', 'GOOD', 'FAIR'] as const;
-const SIZES = ['S', 'M', 'L', 'XL', '32', '34'] as const;
+const SIZES = [
+  '12 × 8 × 4 in',
+  '32 cm height',
+  '40 mm case',
+  '18 × 24 in framed',
+  '2.4 kg solid bronze',
+  'Height: 45 cm',
+  '9 × 6 in folio',
+  'Diameter: 28 cm',
+] as const;
 
-// Curated free editorial-style images.
+// Curated high-resolution museum, horology, and antique sculpture images.
 const IMAGES = [
-  'https://images.unsplash.com/photo-1591047139829-d91aecb6caea?w=1200&q=80',
-  'https://images.unsplash.com/photo-1551488831-00ddcb6c6bd3?w=1200&q=80',
-  'https://images.unsplash.com/photo-1542272604-787c3835535d?w=1200&q=80',
-  'https://images.unsplash.com/photo-1620799140408-edc6dcb6d633?w=1200&q=80',
-  'https://images.unsplash.com/photo-1490481651871-ab68de25d43d?w=1200&q=80',
-  'https://images.unsplash.com/photo-1503342217505-b0a15ec3261c?w=1200&q=80',
-  'https://images.unsplash.com/photo-1564859228273-274232fdb516?w=1200&q=80',
-  'https://images.unsplash.com/photo-1539109136881-3be0616acf4b?w=1200&q=80',
-  'https://images.unsplash.com/photo-1485518882345-15568b007407?w=1200&q=80',
-  'https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=1200&q=80',
+  'https://images.unsplash.com/photo-1509042239860-f550ce710b93?w=1200&q=80',
+  'https://images.unsplash.com/photo-1544967082-d9d25d867d66?w=1200&q=80',
+  'https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?w=1200&q=80',
+  'https://images.unsplash.com/photo-1577083552431-6e5fd01aa342?w=1200&q=80',
+  'https://images.unsplash.com/photo-1615529328331-f8917597711f?w=1200&q=80',
+  'https://images.unsplash.com/photo-1524592094714-0f0654e20314?w=1200&q=80',
+  'https://images.unsplash.com/photo-1579783902614-a3fb3927b675?w=1200&q=80',
+  'https://images.unsplash.com/photo-1522335789203-aabd1fc54bc9?w=1200&q=80',
 ] as const;
 
 const TITLES = [
-  'Felted Wool Field Coat',
-  'Garment-Dyed Selvedge Trousers',
-  'Reverse-Weave Crewneck',
-  'Calf Leather Derby',
-  'Hand-Knit Mohair Cardigan',
-  'Raw Denim Five-Pocket',
-  'Linen Camp Collar Shirt',
-  'Boiled Wool Bomber',
-  'Suede Chelsea Boot',
-  'Cotton Poplin Trench',
+  'Late Edo Period Shakudo & Gilt Tsuba',
+  '19th-Century Marine Chronometer by Breguet',
+  'Ming Dynasty Celadon Jade Libation Vessel',
+  'Meiji Era Bronze Dragon Incense Burner',
+  'Victorian Hand-Engraved Sterling Silver Goblet',
+  'Imperial Cloisonné Enamel Baluster Vase',
+  'Early 20th-Century Enamelled Cartier Pocket Watch',
+  'Ottoman Gilt-Brass Astrolabe & Calendar Plate',
+  'Song Dynasty Jian Ware "Hare\'s Fur" Tea Bowl',
+  'Gothic Revival Hand-Carved Oak Reliquary',
 ] as const;
 
 const DESCRIPTIONS = [
-  'Sourced from a Tokyo collector. Lightly worn, no flaws. Reinforced shoulder seams and a faint patina at the cuffs that only adds to it.',
-  'Deadstock from the FW19 production run. Tags off, never worn. Stored flat in a climate-controlled archive.',
-  'Personal piece from my rotation. Loved hard and showing it — soft hand, cracked indigo, broken in to perfection.',
-  'Pulled from a press sample sale. Inside tag intact. Color is closer to the second image — warm umber, not the cooler tone the gallery suggests.',
+  'Sourced from an esteemed Kyoto private collection. Features exquisite period patina and original maker hallmark. Complete with documented provenance and authentication certificate.',
+  'Preserved in exceptional condition within a mahogany deck box. Original balance spring intact, exhibiting consistent horological precision.',
+  'Carved from a single boulder of mutton-fat celadon nephrite jade. Subtly polished surface showing characteristic Russet skin inclusions consistent with period lapidary craftsmanship.',
+  'Cast in solid patinated bronze with lost-wax technique. Accompanied by archival records tracing ownership across European and East Asian collections.',
 ] as const;
 
 async function main() {
@@ -142,7 +157,7 @@ async function main() {
         startsAt,
         endsAt,
         status: 'LIVE',
-        tags: ['archive', 'curated'],
+        tags: ['antique', 'provenance-verified', 'curated'],
         images: {
           create: [0, 1, 2].map((idx) => ({
             url: IMAGES[(i + idx) % IMAGES.length]!,
