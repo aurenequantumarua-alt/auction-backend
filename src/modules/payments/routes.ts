@@ -39,6 +39,24 @@ export const registerPaymentRoutes = async (app: FastifyInstance): Promise<void>
 
     const amount = settlement.currentWinnerBid.amount;
 
+    // Save shipping address if supplied with checkout request
+    const ShippingPayload = z.object({
+      shippingName: z.string().min(2).max(100).optional(),
+      shippingPhone: z.string().min(10).max(15).optional(),
+      shippingAddress: z.string().min(5).max(300).optional(),
+      shippingCity: z.string().min(2).max(100).optional(),
+      shippingState: z.string().min(2).max(100).optional(),
+      shippingPostalCode: z.string().min(5).max(10).optional(),
+    }).optional();
+
+    const parsedShipping = req.body ? ShippingPayload.safeParse(req.body) : null;
+    if (parsedShipping?.success && parsedShipping.data && Object.keys(parsedShipping.data).length > 0) {
+      await prisma.auctionSettlement.update({
+        where: { id: settlementId },
+        data: parsedShipping.data,
+      });
+    }
+
     if (!razorpayService.isConfigured()) {
       return {
         provider: 'mock' as const,
@@ -139,6 +157,24 @@ export const registerPaymentRoutes = async (app: FastifyInstance): Promise<void>
     if (settlement.currentWinnerBid.bidderId !== req.user!.sub) {
       throw forbidden('Only the current winner can complete this');
     }
+
+    const ShippingPayload = z.object({
+      shippingName: z.string().min(2).max(100).optional(),
+      shippingPhone: z.string().min(10).max(15).optional(),
+      shippingAddress: z.string().min(5).max(300).optional(),
+      shippingCity: z.string().min(2).max(100).optional(),
+      shippingState: z.string().min(2).max(100).optional(),
+      shippingPostalCode: z.string().min(5).max(10).optional(),
+    }).optional();
+
+    const parsedShipping = req.body ? ShippingPayload.safeParse(req.body) : null;
+    if (parsedShipping?.success && parsedShipping.data && Object.keys(parsedShipping.data).length > 0) {
+      await prisma.auctionSettlement.update({
+        where: { id: settlementId },
+        data: parsedShipping.data,
+      });
+    }
+
     await settlementService.markPaid(
       settlementId,
       req.user!.sub,

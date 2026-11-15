@@ -8,11 +8,21 @@ import {
 import { auctionService } from './service.js';
 import { settlementService } from './settlement.service.js';
 import { badRequest, forbidden } from '../../utils/http-error.js';
+import { prisma } from '../../lib/prisma.js';
 import { z } from 'zod';
 
 const ShipSchema = z.object({
   trackingNumber: z.string().trim().min(1, 'Tracking number is required').max(100),
   courierName: z.string().trim().min(1, 'Courier name is required').max(100),
+});
+
+const ShippingAddressSchema = z.object({
+  shippingName: z.string().min(2, 'Full name is required').max(100).trim(),
+  shippingPhone: z.string().min(10, 'Valid 10-digit mobile number required').max(15).trim(),
+  shippingAddress: z.string().min(5, 'Detailed delivery address required').max(300).trim(),
+  shippingCity: z.string().min(2, 'City is required').max(100).trim(),
+  shippingState: z.string().min(2, 'State is required').max(100).trim(),
+  shippingPostalCode: z.string().min(5, 'Postal PIN code required').max(10).trim(),
 });
 
 const DisputeSchema = z.object({
@@ -123,6 +133,21 @@ export const registerAuctionRoutes = async (app: FastifyInstance): Promise<void>
   });
 
   // ── Escrow lifecycle endpoints ────────────────────────────────────────
+
+  // Buyer submits / updates delivery address for their won auction.
+  app.post('/settlements/:id/address', { preHandler: requireAuth }, async (req) => {
+    const { id } = req.params as { id: string };
+    const address = ShippingAddressSchema.parse(req.body);
+    const s = await settlementService.getById(id, req.user!.sub);
+    if (s.currentWinnerBid?.bidderId !== req.user!.sub) {
+      throw forbidden('Only the winning bidder can submit the delivery address');
+    }
+    await prisma.auctionSettlement.update({
+      where: { id },
+      data: address,
+    });
+    return { ok: true };
+  });
 
   // Seller marks the item as shipped with tracking info.
   app.post('/settlements/:id/ship', { preHandler: requireAuth }, async (req) => {

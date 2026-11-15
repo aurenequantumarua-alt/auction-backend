@@ -212,6 +212,13 @@ model AuctionSettlement {
   paymentDeadline    DateTime
   attemptCount       Int              @default(1)
   status             SettlementStatus @default(AWAITING_PAYMENT)
+  // Delivery address (provided by buyer at checkout)
+  shippingName       String?
+  shippingPhone      String?
+  shippingAddress    String?
+  shippingCity       String?
+  shippingState      String?
+  shippingPostalCode String?
   // Delivery tracking
   shippedAt          DateTime?
   trackingNumber     String?
